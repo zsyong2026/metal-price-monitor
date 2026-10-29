@@ -292,11 +292,42 @@ async function fetchHourlyReal(metal) {
     if (bars && bars.length >= 20) break;
     if (i < 2) await new Promise((r) => setTimeout(r, 800));
   }
+  if (!bars || bars.length < 20) {
+    // 【C22】东财不可达（平台沙箱）→ 改用新浪期货 60 分钟K
+    bars = await fetchSinaHourly(metal).catch(() => null);
+  }
   if (!bars || bars.length < 20) return null;
   const sc = EM_SCALE[metal];
   return bars.map((p) => [p[0], round2(p[1] * sc)]);
 }
 
+// 【C22 新增】新浪期货 60 分钟K（东财不可达时的第二数据源）
+//   平台沙箱实测抓不到 push2his.eastmoney.com（eastmoney=false），
+//   而 stock.finance.sina.com.cn 可达（sina=true）→ 用它兜底，端上「时」按钮才不会永久失效。
+// 仅金/银：铜按 C17 设计「无小时线」（沪铜主连夜盘量纲异常），不能走这条兜底
+const SINA_HOURLY_SYM = { gold: "AU0", silver: "AG0" }; // 沪金主连 / 沪银主连
+async function fetchSinaHourly(metal) {
+  const sym = SINA_HOURLY_SYM[metal];
+  if (!sym) return null;
+  const url = "https://stock.finance.sina.com.cn/futures/api/jsonp.php/var%20_=/InnerFuturesNewService.getFewMinLine?symbol=" + sym + "&type=60";
+  const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(20000) });
+  const txt = await r.text();
+  const i = txt.indexOf("["), j = txt.lastIndexOf("]");
+  if (i < 0 || j <= i) return null;
+  let arr = null;
+  try { arr = JSON.parse(txt.slice(i, j + 1)); } catch (e) { return null; }
+  if (!Array.isArray(arr) || arr.length < 20) return null;
+  const out = [];
+  for (const b of arr) {
+    if (!b || !b.d) continue;
+    const ms = Date.parse(String(b.d).replace(" ", "T") + "+08:00");
+    const v = parseFloat(b.c);
+    if (isFinite(ms) && isFinite(v) && v > 0) out.push([ms, v]);
+  }
+  out.sort((a, b) => a[0] - b[0]);
+  // 只取最近 140 根（约 12 个交易日），与东财 60 分钟K 的窗口量级对齐
+  return out.length >= 20 ? out.slice(-140) : null;
+}
 // 用真实 60 分钟K 覆盖生成的小时线尾部；伦敦/香港按「当日收盘价比率」联动，保证三市场同步
 function buildHourlyFromReal(hRealD, D, L, rates) {
   if (!hRealD || hRealD.length < 20 || !D.length || !L.length) return null;
