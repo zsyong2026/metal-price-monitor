@@ -54,13 +54,28 @@ function ageMin(iso) {
     const m = health.mirror || {};
     console.log("[platform] mirror.ok=" + m.ok + " commit=" + (m.commit || "-") +
       " hasToken=" + m.hasToken + (m.error ? " error=" + m.error : ""));
+    const cr = health.credential || {};
+    if (cr.state) console.log("[platform] credential.state=" + cr.state + (cr.detail ? " detail=" + cr.detail : ""));
 
     if (health.lastGenOk !== true) problems.push("平台生成器自报失败：" + (health.lastError || "未知"));
     if (isNaN(age) || age > MAX_AGE_MIN) {
       problems.push("平台数据不新鲜：generatedAt=" + health.generatedAt +
         "（" + (isNaN(age) ? "?" : Math.round(age)) + " 分钟前，上限 " + MAX_AGE_MIN + " 分钟）");
     }
-    if (m.ok === false) {
+    // 【C24】凭据预检：PAT 失效是本项目最可能的单点故障（→ GH Pages 停更 → 微信端旧数据）。
+    //   优先于镜像失败告警：预检在每轮生成前就做，能比「推送报错」更早发现。
+    if (cr.state === "expired" || m.credState === "expired") {
+      problems.push("【GH PAT 已失效】GitHub 凭据被拒（HTTP 401），GH Pages 镜像已停更，" +
+        "手机网页/已发布小程序会持续读到旧数据。处置：到 GitHub Settings → Developer settings → " +
+        "Personal access tokens 重新生成 token（需 repo 写权限），然后更新 metals-monitor/.env 的 GH_TOKEN 并重发平台版。");
+    } else if (cr.state === "missing") {
+      problems.push("【GH 凭据缺失】平台未读到 GH_TOKEN（检查 metals-monitor/.env），镜像无法推送，" +
+        "手机网页/已发布小程序会读到旧数据。");
+    }
+    if (m.ok === false && m.credState !== "expired" && cr.state !== "expired") {
+      // 【C24】区分「凭据失效」与「其它错误」：前者是 GH PAT 到期/被吊销，
+      // 必须换 token 才能恢复（手机网页/已发布小程序会一直读到旧数据）；
+      // 后者多为网络抖动，下一轮生成会自动重试。
       problems.push("GH Pages 镜像推送失败（手机网页/已发布小程序会读到旧数据）：" +
         (m.error || "未知") + (m.hasToken ? "" : "（无 GitHub 凭据，需检查 .env / GH_TOKEN）"));
     }
