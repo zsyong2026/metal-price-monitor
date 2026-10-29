@@ -5,6 +5,8 @@ const fs = require("fs");
 const path = require("path");
 // 去重规范（收集 → 清洗 → 入库 唯一口径，三端共用同一份实现）
 const ED = require(path.join(__dirname, "js", "event-dedupe.js"));
+// 【C20】事件「具体化」能力包（事实抽取 + 国内源解析），网页版与云函数共用同一份
+const NF = require(path.join(__dirname, "js", "news-facts.js"));
 
 const DATA_DIR = path.join(__dirname, "data");
 const OZ2G = 31.1034768;
@@ -702,6 +704,13 @@ const FEEDS = [
   { name: "CNBC 头条", url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114" },
   { name: "CNBC 商务", url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10001147" },
   { name: "MarketWatch 头条", url: "https://feeds.content.dowjones.io/public/rss/mw_topstories" },
+  // 【C20 补国内源】用户反馈「美联储的不加息，你还没收录进来」——境外源的中文归纳只能给出
+  // 「美联储·楼市：多空交织」这类关键词拼装，用户看不出发生了什么；国内源给的是**中文原文**
+  // （如「香港金管局回应美联储议息决定：…维持联邦基金利率目标区间于3.75-4厘」），才是用户要的信息。
+  { name: "东方财富快讯", kind: "eastmoney", url: "https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_50_1_.html",
+    headers: { Referer: "https://kuaixun.eastmoney.com/" } },
+  { name: "华尔街见闻快讯", kind: "wallstreetcn", url: "https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=global-channel&limit=50",
+    headers: { Origin: "https://wallstreetcn.com" } },
 ];
 // 源停更判定：最新一条 pubDate 超过这么多天，该源判「陈旧」，其条目不再入库。
 // 真实案例：WSJ 两个 feed 停更在一年多前，旧闻每 15 分钟混进候选池，
@@ -716,6 +725,8 @@ const MACRO_KEYS = [
   /\bfed\b/i, /federal reserve/i, /central bank|央行/i, /rate cut|降息|加息|利率/i,
   /inflation|cpi|\bpce\b|通胀/i, /tariff|关税|trade war/i, /recession|衰退/i,
   /stimulus|刺激/i, /jobs report|就业|nonfarm/i, /goldman|摩根/i,
+  // 【C20】国内源是中文标题，需补中文宏观关键词（否则「美联储…议息」类中文快讯无法入库）
+  /美联储|联储|议息|利率决议|非农|失业率|量化宽松|缩表|避险/,
 ];
 function stripText(s) {
   return String(s)
@@ -793,6 +804,23 @@ function catOf(t) {
 
 // ---------- 中文归纳：关键标签 / 中文标题 / 中文摘要（规则化，输出保证全中文）----------
 const ZH_PHRASES = [
+  // 【C20】中文标题的标签（国内快讯源）——放在最前：英文模式不会命中中文文本，互不影响。
+  //     「不加息」必须排在「加息」前面，否则「维持利率不变」会被标成「加息」，方向就标反了。
+  [/不加息|维持利率|按兵不动|利率不变/, "不加息"],
+  [/美联储|联储/, "美联储"],
+  [/加息|利率决议|议息/, "加息"],
+  [/降息|下调利率/, "降息"],
+  [/通胀|CPI|PPI/, "通胀"],
+  [/关税|贸易战/, "关税"],
+  [/黄金|金价/, "黄金"],
+  [/白银|银价/, "白银"],
+  [/铜价|沪铜/, "铜"],
+  [/非农|失业率|就业/, "就业"],
+  [/衰退|经济放缓/, "衰退"],
+  [/避险|地缘|冲突/, "冲突"],
+  [/美元/, "美元"],
+  [/楼市|房地产|按揭/, "楼市"],
+  [/央行/, "央行"],
   [/rate cut|cuts? rates|easing|pivot to cuts/i, "降息"],
   [/rate hike|raises? rates|hawkish|tightening/i, "加息"],
   [/fed\b|federal reserve|fomc|powell/i, "美联储"],
@@ -829,8 +857,16 @@ function zhTags(t) {
 }
 function zhTitle(t, tags) {
   const dir = impactOf(t);
-  const head = (tags || []).filter((x) => x !== "走强" && x !== "走弱").slice(0, 2).join("·") || "国际市场";
   const dirZh = dir === "up" ? "利多驱动" : dir === "down" ? "利空压制" : "多空交织";
+  // 【C20 具体化】标题主体优先用「具体发生了什么」，而不是关键词拼装：
+  //   · 英文标题 → 规则化事实抽取（"Fed leaves rates unchanged" → "美联储维持利率不变（不加息）"）
+  //   · 中文标题 → 直接用中文原文标题（国内快讯本身就是人话）
+  // 否则用户看到的只会是「美联储·楼市：多空交织」，完全不知道这条讲的是什么。
+  const cn = /[\u4e00-\u9fa5]/.test(t) ? NF.cleanCnHeadline(t).replace(/[，。；、：]+$/, "") : "";
+  if (cn.length >= 6) return cn.slice(0, 22) + (cn.length > 22 ? "…" : "") + "：" + dirZh;
+  const fd = NF.zhFactDetail(t);
+  if (fd.text && !fd.generic) return fd.text.slice(0, 22) + "：" + dirZh;
+  const head = (tags || []).filter((x) => x !== "走强" && x !== "走弱").slice(0, 2).join("·") || "国际市场";
   return head + "：" + dirZh;
 }
 var MONTHS = { january: "1", february: "2", march: "3", april: "4", may: "5", june: "6", july: "7", august: "8", september: "9", october: "10", november: "11", december: "12" };
@@ -1633,14 +1669,28 @@ function zhGist(raw) {
 // 英文源：先讲清「发生了什么」，再给对贵金属的结论；中文源：沿用原文概述
 function zhSummary(t, desc, tags, cat) {
   const dir = impactOf(t);
-  const dirZh = dir === "up" ? "利多，价格有望获得支撑" : dir === "down" ? "利空，价格面临压力" : "影响偏中性，方向待确认";
   const detail = stripText(desc || "");
+  // ① 中文原文（国内源）：直接用原文概述——这是用户最想要的信息（"维持联邦基金利率目标区间于3.75-4厘"）
   if (/[\u4e00-\u9fa5]/.test(detail)) {
-    // 中文源：原文概述（截断到 90 字并去掉尾标点）
-    return detail.slice(0, 90).replace(/[，。；、]+$/, "") + "。对贵金属影响：" + dirZh;
+    let d = detail;
+    const head = NF.cleanCnHeadline(t).replace(/[：:，。；、]+$/, "");
+    // 原文概述常常是「标题：正文」，去掉重复的标题部分
+    if (head && d.indexOf(head) === 0) d = d.slice(head.length).replace(/^[：:，,。、\s]+/, "");
+    if (d.length >= 8) return d.slice(0, 92).replace(/[，。；、]+$/, "") + "。对贵金属影响：" + NF.zhImpact(d, dir);
   }
-  // 分类在卡片顶行已展示、关键词由顶部标签 chips 展示，摘要里都不再重复
-  return (zhGist(t) || zhGistFallback(tags, cat)) + "。对贵金属影响：" + dirZh;
+  // ② 中文标题（国内源无摘要时）：标题本身就是事件概况
+  const cn = /[\u4e00-\u9fa5]/.test(t) ? NF.cleanCnHeadline(t).replace(/[，。；、]+$/, "") : "";
+  if (cn.length >= 8) return cn.slice(0, 92) + "。对贵金属影响：" + NF.zhImpact(cn, dir);
+  // ③ 英文标题择优：**具体事实**优先（用户要知道具体发生了什么）；
+  //    事实笼统时（如只说「关税政策有变化」）让位给**可读的词典译文**（专有说法译得准，
+  //    例如「本田警告 50% 加拿大汽车关税…」）；译文读不通才用笼统事实；最后回落通用模板。
+  const fd = NF.zhFactDetail(t);
+  const fact = fd.text;
+  const gist = zhGist(t);
+  const readable = !!(gist && NF.zhGistReadable(gist));
+  const specific = !!(fact && !fd.generic);
+  const usable = specific ? fact : (readable ? gist : (fact || gist || zhGistFallback(tags, cat)));
+  return usable + "。对贵金属影响：" + NF.zhImpact(specific ? fact : "", dir);
 }
 // 概况译不出来时（生僻标题）的兜底：至少告诉用户这条说的是哪个方向的事
 function zhGistFallback(tags, cat) {
@@ -1670,7 +1720,7 @@ async function fetchNewsAll() {
   var health = [];
   var now = Date.now();
   var results = await Promise.all(FEEDS.map((f) =>
-    fetch(f.url, { headers: { "User-Agent": "Mozilla/5.0" } })
+    fetch(f.url, { headers: Object.assign({ "User-Agent": "Mozilla/5.0" }, f.headers || {}) })
       .then((r) => (r.ok ? r.text() : Promise.reject(new Error("http " + r.status))))
       .then((t) => ({ f, t }))
       .catch(() => null)
@@ -1679,6 +1729,44 @@ async function fetchNewsAll() {
     const f = r && r.f;
     if (!r) {
       health.push({ name: f ? f.name : "未知源", ok: false, items: 0, latest: null, ageDays: null, stale: true });
+      continue;
+    }
+    // 【C20】国内快讯源：JSON/JSONP 解析 + 中文噪声门禁 + 时间窗
+    // （快讯是滚动流，不做「源停更」判定；单源入库上限 20 条，避免淹没境外宏观条目）
+    if (f.kind) {
+      const items = f.kind === "eastmoney" ? NF.parseEastmoney(r.t)
+        : f.kind === "wallstreetcn" ? NF.parseWallstreetcn(r.t)
+        : [];
+      const fresh = items.filter((it) => NF.withinHours(it.date, 36));
+      const latest = fresh.length ? fresh[0].date : null;
+      health.push({
+        name: f.name, ok: true, items: fresh.length,
+        latest: latest ? latest + "T00:00:00Z" : null,
+        ageDays: latest ? Math.round(((now - Date.parse(latest)) / 86400000) * 10) / 10 : null,
+        stale: false, kind: "cn",
+      });
+      let taken = 0;
+      for (const it of fresh) {
+        if (taken >= 20) break;
+        if (!NF.cnRelevant(it.title, it.desc)) continue;   // 噪声门禁（地方债/逆回购/个股公告等）
+        const metals = routeMetal(it.title + " " + it.desc);
+        if (!metals.length) continue;
+        for (const m of metals) {
+          out.push({
+            metal: m,
+            date: it.date,
+            title: it.title,
+            desc: it.desc,
+            impact: impactOf(it.title + " " + it.desc),
+            category: catOf(it.title + " " + it.desc),
+            source: f.name,
+            url: it.link || "",
+            pubTs: Date.parse(it.pub || "") || 0,
+            cn: true,
+          });
+        }
+        taken++;
+      }
       continue;
     }
     const items = parseRSS(r.t).slice(0, 30);
@@ -1911,5 +1999,5 @@ function validateEvents(res) {
   return errs;
 }
 
-module.exports = { generateAll, fetchSpotAll, buildEvents, zhGist, zhSummary };
+module.exports = { generateAll, fetchSpotAll, buildEvents, zhGist, zhSummary, zhTitle, zhTags, zhFact: NF.zhFact };
 if (require.main === module) generateAll().then((r) => console.log("done", r)).catch((e) => { console.error(e); process.exit(1); });
