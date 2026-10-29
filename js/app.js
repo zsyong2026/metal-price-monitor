@@ -777,7 +777,9 @@
   }
 
   /* ---------- 主动更新：定时检查数据新版本，不依赖用户刷新/重进 ---------- */
-  var AUTO_REFRESH_MS = 5 * 60 * 1000; // 5 分钟一检（抓取 15 分钟一轮，提前 1/3 周期）
+  // C19：数据改为「平台生成器每 15 分钟生成 → 直推 GH Pages 镜像」，手机网页/已发布小程序
+  // 读镜像、桌面端读平台，镜像落地比生成晚约 1~2 分钟 → 轮询周期收紧到 3 分钟，尽快追上。
+  var AUTO_REFRESH_MS = 3 * 60 * 1000; // 3 分钟一检（覆盖「15 分钟生成 + 镜像落地」链路）
   var checking = false; // 防重入：轮询与 visibilitychange 可能并发
   function startAutoRefresh() {
     setInterval(checkDataUpdate, AUTO_REFRESH_MS);

@@ -7,15 +7,23 @@
  *
  * 运行环境：Node（module.exports）与浏览器/小程序（挂载到 global）双兼容。
  *
- * 去重五原则（命中任意一条即判定为重复，按「保留优先级」留一条）：
+ * 去重六原则（命中任意一条即判定为重复，按「保留优先级」留一条）：
  *   P1 标题指纹相同        —— 归一化标题完全一致，且事件日期相差 ≤2 天（同题不同天=连续报道，不算重复）
  *   P2 摘要指纹相同        —— 归一化摘要前 40 字完全一致且日期相近；仅当摘要有实质内容（≥20 字）
  *                            才启用，通用短摘要（如"对贵金属影响：影响偏中性"）不含判别信息，不参与判重
  *   P3 同日期 · 标题互含   —— 同一天，且一条标题是另一条的子串（≥8 字）
  *   P4 近日期 · 近义标题   —— 日期相差 ≤2 天，且标题 token Jaccard ≥ 0.62
  *   P5 同日期 · 高度近义   —— 同一天，且标题 token Jaccard ≥ 0.72（跨源同一事件措辞不同）
+ *   P6 同日期 · 同模板摘要且标签重叠（C19）—— 规则化归纳出的条目，摘要常退化成同一句模板
+ *                            （"外媒报道，X方面出现新动向。对贵金属影响：…"），两条不同原文可能
+ *                            只差一个关键词，标题 Jaccard 约 0.60（卡在 P5 阈值 0.72 之下）而漏判，
+ *                            但展示上完全同形（连相关性数值都因同一事件窗而相同）→ 用户看到「重复」。
+ *                            判定：同一天 + 摘要剔除各自标签后骨架完全一致 + 两条标签集合有交集
+ *                            （交集保证是同一话题，如「美联储·冲突」与「美联储·楼市」判重，
+ *                             而「美联储·冲突」与「通胀·关税」骨架虽同但标签无交集，不判重）
  *
  * 保留优先级（谁留下）：人工/种子 > 摘要信息量足 > 来源权威度高 > 有原文链接 > 日期更新
+ * 被剔除条目的标签会并入保留条目（信息不丢：合并后 tags 同时含「冲突」「楼市」）
  */
 (function (root, factory) {
   var api = factory();
@@ -71,6 +79,43 @@
     var han = t.replace(/[a-z0-9]/g, "");
     for (i = 0; i + 2 <= han.length; i++) set[han.substr(i, 2)] = 1;
     return Object.keys(set);
+  }
+
+  /**
+   * 摘要骨架（C19 / P6）：剔除本条自己的标签词后的残余文本。
+   * 规则化归纳的通用模板摘要（"外媒报道，X方面出现新动向。对贵金属影响：…"）去掉变量关键词后，
+   * 剩下的模板部分完全一致 → 即「同一模板」；据此识别视觉同形的重复条目。
+   */
+  function skeletonKey(summary, tags) {
+    var t = String(summary || "");
+    var arr = Array.isArray(tags) ? tags : (tags ? [tags] : []);
+    for (var i = 0; i < arr.length; i++) {
+      var tag = String(arr[i] || "").trim();
+      if (!tag) continue;
+      t = t.split(tag).join("");
+    }
+    return descKey(t, 60);
+  }
+
+  /** 两个标签集合是否有交集（同一话题判定） */
+  function tagsOverlap(a, b) {
+    var A = Array.isArray(a) ? a : (a ? [a] : []);
+    var B = Array.isArray(b) ? b : (b ? [b] : []);
+    for (var i = 0; i < A.length; i++) {
+      if (A[i] && B.indexOf(A[i]) >= 0) return true;
+    }
+    return false;
+  }
+
+  /** 把被剔除条目的标签并入保留条目（信息不丢） */
+  function mergeTags(keeper, dropped) {
+    if (!keeper) return keeper;
+    var kt = Array.isArray(keeper.tags) ? keeper.tags : (keeper.tags = []);
+    var dt = Array.isArray(dropped && dropped.tags) ? dropped.tags : [];
+    for (var i = 0; i < dt.length; i++) {
+      if (dt[i] && kt.indexOf(dt[i]) < 0) kt.push(dt[i]);
+    }
+    return keeper;
   }
 
   function jaccard(a, b) {
@@ -153,6 +198,7 @@
     var dropped = [];   // { item, reason, keeper }
     var byTitle = Object.create(null);   // P1：tk -> [events]（同指纹可能有多条，按日期近邻匹配）
     var byDesc = Object.create(null);    // P2：dk -> [events]
+    var bySkel = Object.create(null);     // P6：摘要骨架（剔除标签后的模板）-> [events]
 
     // 指纹命中后，还要日期相近才算重复（防止同题不同天的连续报道互撞）
     function nearHit(bucket, date) {
@@ -202,11 +248,30 @@
         }
       }
 
-      if (hit) { dropped.push({ item: e, reason: reason, keeper: hit.title }); continue; }
+      // P6（C19）：同日期 · 摘要同模板（剔除各自标签后骨架一致）· 标签有交集
+      // —— 抓「标题只差一个词、摘要同一句模板」的视觉同形重复（标题 Jaccard 约 0.60，够不到 P5 阈值）
+      if (!hit && !opt.strict) {
+        var sk = skeletonKey(e.summary || e.desc, e.tags);
+        if (sk && sk.length >= 12) {
+          var sb = bySkel[sk] || [];
+          for (var s = 0; s < sb.length; s++) {
+            if (dayDiff(date, sb[s].date) !== 0) continue;
+            if (!tagsOverlap(e.tags, sb[s].tags)) continue;
+            hit = sb[s]; reason = "P6同日期同模板摘要且标签重叠"; break;
+          }
+        }
+      }
+
+      if (hit) {
+        mergeTags(hit, e); // 被剔除条目的标签并入保留条目（信息不丢）
+        dropped.push({ item: e, reason: reason, keeper: hit.title }); continue;
+      }
 
       kept.push(e);
       pushBucket(byTitle, tk, e);
       if (dk && dk.length >= 8) pushBucket(byDesc, dk, e);
+      var skKeep = skeletonKey(e.summary || e.desc, e.tags);
+      if (skKeep && skKeep.length >= 12) pushBucket(bySkel, skKeep, e);
     }
 
     // 输出前复核：kept 内部不应再有任何重复（仅显式要求时才算，避免与 findDuplicates 互相递归）
@@ -369,6 +434,9 @@
     normTitle: normTitle,
     descKey: descKey,
     tokSet: tokSet,
+    skeletonKey: skeletonKey,
+    tagsOverlap: tagsOverlap,
+    mergeTags: mergeTags,
     jaccard: jaccard,
     dayDiff: dayDiff,
     keepScore: keepScore,
