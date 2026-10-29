@@ -744,11 +744,29 @@ function parseRSS(xml) {
   }
   return out;
 }
+// 从文章 URL 的发布路径里取日期（优先于 pubDate）
+// 【C19】实测同一个 CNBC 文章在不同 CDN 副本上 pubDate 不一致（20:59Z vs 次日 01:30Z），
+//   而 URL 里的 /YYYY/MM/DD/ 是发布方的规范发布日期，跨副本、跨时区都稳定。
+//   取不到时回落 isoDate(pub)（UTC 口径），再取不到才用当天。
+function dateFromUrl(u) {
+  const m = String(u || "").match(/\/(\d{4})\/(\d{2})\/(\d{2})(?:\/|-|_)/);
+  if (!m) return "";
+  const y = +m[1], mo = +m[2], d = +m[3];
+  if (y < 2000 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31) return "";
+  return m[1] + "-" + m[2] + "-" + m[3];
+}
+
 function isoDate(s) {
   const d = new Date(s);
+  // 【C19】统一用 UTC 取事件日期。
+  //   原实现用本地时区（getFullYear/getMonth/getDate），有两个硬伤：
+  //     ① 同一篇文章的日期随「运行机器时区」不同而不同（平台沙箱 vs 本机 vs 云函数）→ 跨端漂移；
+  //     ② RSS 的 pubDate 会被发布方更新（实测 CNBC 把同一条从 12:00Z 改到 20:59Z），
+  //        跨过本地 00:00（UTC+8 即 16:00Z）时日期从 10-28 翻转成 10-29
+  //        → 「同日期」类去重规则失效，用户看到两张同形卡片（美联储·冲突 / 美联储·楼市）。
+  //   UTC 口径：跨机器确定、与本文件其它日期校验（未来日期、源停更）一致，且不受 pubDate 抖动影响。
   if (isNaN(d.getTime())) return new Date().toISOString().slice(0, 10);
-  const p = (n) => (n < 10 ? "0" + n : "" + n);
-  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+  return d.toISOString().slice(0, 10);
 }
 // 判定该条新闻归属哪些品种；宏观类事件三个品种均计入
 function routeMetal(t) {
@@ -1685,7 +1703,7 @@ async function fetchNewsAll() {
       for (const m of metals) {
         out.push({
           metal: m,
-          date: isoDate(it.pub),
+          date: dateFromUrl(it.link) || isoDate(it.pub),
           title: it.title.slice(0, 90),
           desc: it.desc,
           impact: impactOf(it.title),
@@ -1734,6 +1752,13 @@ async function buildEvents() {
         // 不必等下一次抓源——云端库里的存量条目也靠这条自愈到新版格式。
         if (e.origTitle && e.summary && e.summary.indexOf("。对贵金属影响：") < 0) {
           e.summary = zhSummary(e.origTitle, "", e.tags, e.category);
+        }
+        // 【C19】存量条目的日期回填：历史条目是用旧口径（本地时区）算出来的日期，
+        //   一旦入库就被原样沿用 → 日期会一直停在错误那天（实测 CNBC 文章被记成 URL 日期 +1 天，
+        //   且随抓取时刻在 10-28/10-29 之间漂移）。这里按 URL 发布路径回填，跨机器确定。
+        if (e.url) {
+          const dfix = dateFromUrl(e.url);
+          if (dfix) e.date = dfix;
         }
         res[m].push(e); seen[m].add(e.title);
       }

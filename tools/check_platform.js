@@ -12,6 +12,8 @@
 //   ③ 镜像是否推送成功（mirror.ok）——它决定手机网页/已发布小程序能不能拿到新数据
 // 运行：node tools/check_platform.js
 const notify = require("./notify");
+const path = require("path");
+const ED = require(path.join(__dirname, "..", "js", "event-dedupe.js"));
 
 const PLATFORM_HOST = "metal-price-monitor.app.workbuddy.host";
 const SHARE = "POOW32T4LI";
@@ -62,6 +64,39 @@ function ageMin(iso) {
       problems.push("GH Pages 镜像推送失败（手机网页/已发布小程序会读到旧数据）：" +
         (m.error || "未知") + (m.hasToken ? "" : "（无 GitHub 凭据，需检查 .env / GH_TOKEN）"));
     }
+  }
+
+  // ② 事件体检：视觉同形重复（用户反馈「事件列表有重复」）+ 事件日期与 URL 发布日漂移
+  const events = await getJSON("https://" + PLATFORM_HOST + "/api/events?sharecode=" + SHARE);
+  if (events && events.gold) {
+    for (const metal of ["gold", "silver", "copper"]) {
+      const arr = events[metal] || [];
+      // 2.1 日期漂移：条目日期应与 URL 里的发布路径一致（否则同一条会在不同天之间跳）
+      let drift = 0;
+      for (const e of arr) {
+        const m2 = String(e.url || "").match(/\/(\d{4})\/(\d{2})\/(\d{2})(?:\/|-|_)/);
+        if (m2 && (m2[1] + "-" + m2[2] + "-" + m2[3]) !== e.date) drift++;
+      }
+      if (drift) problems.push("事件日期漂移：" + metal + " 有 " + drift + " 条的日期与 URL 发布日不一致");
+      // 2.2 视觉同形重复：摘要同模板 + 标签有交集 + 同日/相邻日
+      const dup = [];
+      for (let i = 0; i < arr.length; i++) {
+        for (let k = i + 1; k < arr.length; k++) {
+          const a = arr[i], b = arr[k];
+          if (Math.abs(new Date(a.date) - new Date(b.date)) / 86400000 > 1) continue;
+          const sa = ED.skeletonKey(a.summary, a.tags), sb = ED.skeletonKey(b.summary, b.tags);
+          if (sa && sa === sb && sa.length >= 12 && ED.tagsOverlap(a.tags, b.tags)) {
+            dup.push("《" + a.title + "》(" + a.date + ") vs 《" + b.title + "》(" + b.date + ")");
+          }
+        }
+      }
+      if (dup.length) {
+        problems.push("事件列表存在视觉同形重复（" + metal + "，" + dup.length + " 对）：" + dup.slice(0, 3).join("；"));
+      }
+    }
+    console.log("[platform] 事件体检完成（gold " + events.gold.length + " 条）");
+  } else {
+    console.warn("[platform] 事件数据不可达，跳过事件体检");
   }
 
   if (problems.length) {
