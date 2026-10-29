@@ -1,0 +1,388 @@
+:root {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --ink: #1a1d24;
+  --ink-soft: #5b6472;
+  --line: #e6e9ef;
+  --gold: #d4a017;
+  --gold-deep: #b8860b;
+  --copper: #b5651d;
+  --up: #e23b3b;      /* 涨=红 */
+  --down: #1faa59;    /* 跌=绿 */
+  --shadow: 0 2px 12px rgba(20,30,50,.06);
+  --radius: 14px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1218;
+    --panel: #171b23;
+    --ink: #e8ebf0;
+    --ink-soft: #93a0b4;
+    --line: #262c38;
+    --shadow: 0 2px 16px rgba(0,0,0,.35);
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.45;
+}
+code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; font-size: .9em; }
+
+/* Header + 金属类别：整体 sticky 固定页面顶部（单一容器，无需硬编码 offset，
+   避免 header 换行变高后把金属类别压在下面导致滚动时被隐藏） */
+.head-fixed {
+  position: sticky; top: 0; z-index: 40;
+  background: var(--panel);
+}
+.app-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 14px 20px;
+  background: linear-gradient(120deg, var(--panel), var(--panel));
+  border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.logo {
+  font-weight: 800; letter-spacing: .5px; font-size: 14px;
+  color: #fff; background: linear-gradient(135deg, var(--gold), var(--copper));
+  padding: 8px 10px; border-radius: 12px; white-space: nowrap;
+}
+.titles h1 { font-size: 18px; margin: 0; font-weight: 700; }
+.titles .subtitle { font-size: 12px; margin: 2px 0 0; color: var(--ink-soft); }
+.header-meta { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.update-time { font-size: 12px; color: var(--ink-soft); }
+.update-time b { color: var(--ink); font-weight: 600; }
+.badge { font-size: 11px; padding: 4px 9px; border-radius: 999px; font-weight: 600; }
+.badge-warn { background: rgba(212,160,23,.16); color: var(--gold-deep); border: 1px solid rgba(212,160,23,.4); }
+
+/* Metal tabs */
+.metal-tabs {
+  display: flex; gap: 8px; padding: 12px 20px 0;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+.tab {
+  appearance: none; border: none; background: transparent; cursor: pointer;
+  font-size: 15px; font-weight: 600; color: var(--ink-soft);
+  padding: 10px 18px; border-radius: 10px 10px 0 0; position: relative; white-space: nowrap;
+}
+.tab.active { color: var(--gold-deep); }
+.tab.active::after {
+  content: ""; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 3px;
+  background: linear-gradient(90deg, var(--gold), var(--copper)); border-radius: 3px;
+}
+
+/* Container */
+.container { max-width: 1180px; margin: 0 auto; padding: 16px 20px 40px; }
+
+/* Controls */
+.controls {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 14px 22px;
+  background: var(--panel); padding: 12px 16px; border-radius: var(--radius);
+  box-shadow: var(--shadow); margin-bottom: 14px;
+}
+.control-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* 筛选项名称加粗（用户反馈 C09）：粒度/市场/单位三个标签统一 600，
+   与 chip 选中态视觉分层，弱化色不变（仍是提示性标签，不是主标题） */
+.cg-label { font-size: 12px; font-weight: 600; color: var(--ink-soft); margin-right: 2px; }
+.chip {
+  appearance: none; cursor: pointer; border: 1px solid var(--line);
+  background: transparent; color: var(--ink-soft);
+  font-size: 13px; padding: 6px 13px; border-radius: 999px; transition: .15s;
+}
+.chip:hover { border-color: var(--gold); color: var(--gold-deep); }
+.chip.active { background: linear-gradient(135deg, var(--gold), var(--copper)); color: #fff; border-color: transparent; font-weight: 600; }
+/* C18：无小时线时禁用「时」选项（铜），禁用态降透明 + 禁指针，避免展示空图 */
+.chip.disabled { opacity: .38; cursor: not-allowed; pointer-events: none; border-style: dashed; }
+.chip-action { border-style: dashed; }
+.actions { margin-left: auto; }
+
+/* Stats */
+.stats {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px;
+}
+.stat-card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 12px 14px; box-shadow: var(--shadow);
+  min-height: 84px; display: flex; flex-direction: column; justify-content: center;
+}
+.stat-card .k { font-size: 12px; color: var(--ink-soft); margin-bottom: 6px; }
+.stat-card .v { font-size: 19px; font-weight: 700; letter-spacing: .3px; font-variant-numeric: tabular-nums; }
+.stat-card .sub { font-size: 12px; margin-top: 4px; font-weight: 600; }
+.v.up, .sub.up { color: var(--up); }
+.v.down, .sub.down { color: var(--down); }
+
+/* Chart */
+.chart-wrap {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 8px; position: relative; margin-bottom: 22px;
+}
+#chart { width: 100%; height: 460px; }
+.chart-loading {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: var(--ink-soft); font-size: 14px; background: var(--panel);
+}
+.chart-wrap.fullscreen { position: fixed; inset: 0; z-index: 999; border-radius: 0; padding: 12px; }
+.chart-wrap.fullscreen #chart { height: 100%; }
+
+/* ---------- 横屏放大（仅移动端，悬浮于折线图右上角）---------- */
+.ls-btn {
+  position: absolute; right: 12px; top: 12px; z-index: 6; display: none;
+  appearance: none; border: 1px solid var(--line); cursor: pointer;
+  background: rgba(255, 255, 255, .88); color: var(--ink-soft);
+  font-size: 12px; padding: 6px 12px; border-radius: 999px; backdrop-filter: blur(4px);
+}
+@media (max-width: 768px) { .ls-btn { display: inline-flex; } }
+@media (min-width: 769px) { .ls-btn { display: none; } }
+/* 已进入全屏/横屏：隐藏"横屏放大"（冗余），退出按钮浮于卡片右上角，网格 top 已为其留位 */
+/* PC 全屏按钮（宽屏显示；移动端由「横屏放大」承担） */
+.fs-btn {
+  display: none; position: absolute; right: 10px; top: 8px; z-index: 4;
+  appearance: none; border: 1px solid var(--line); background: var(--panel); cursor: pointer;
+  border-radius: 999px; padding: 4px 12px; font-size: 12px; color: var(--ink);
+}
+@media (min-width: 769px) { .fs-btn { display: inline-flex; } }
+@media (max-width: 768px) { .fs-btn { display: none; } }
+/* 横屏/全屏态：两个放大按钮都必须隐藏（否则会压盖横轴） */
+.chart-wrap:fullscreen .fs-btn,
+.chart-wrap.landscape .fs-btn { display: none !important; }
+.chart-wrap.landscape .ls-btn,
+.chart-wrap.fullscreen .ls-btn { display: none !important; }
+.chart-wrap:fullscreen { background: var(--bg); padding: 8px 12px; overflow: auto; }
+.chart-wrap:fullscreen .ls-stage { height: calc(100vh - 40px); }
+.chart-wrap:fullscreen #chart { height: calc(100vh - 40px); }
+.chart-wrap.landscape {
+  position: fixed; inset: 0; z-index: 9999; border-radius: 0; margin: 0;
+  padding: 10px 12px;
+  /* 真横屏（手机横放/Android 锁方向）：刘海在左或右，按实际安全区内边距留位 */
+  padding: max(10px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  display: flex; flex-direction: column; background: var(--panel);
+}
+/* 舞台：图表 + 加载提示的容器。竖屏兜底时旋转的是「舞台」而不是全屏元素本身——
+   全屏元素会被浏览器 UA 样式表以 !important 钉死为「铺满 + transform:none」，
+   旋转它的子级可完全绕过（:fullscreen 只匹配全屏元素本身，不波及后代）。 */
+.ls-stage { display: flex; flex-direction: column; width: 100%; height: 100%; }
+.chart-wrap.landscape .ls-stage { flex: 1; min-height: 0; position: relative; }
+.chart-wrap.landscape .ls-stage #chart { flex: 1; height: auto; width: 100%; }
+.ls-exit {
+  position: absolute; right: 12px; top: 12px; z-index: 20; display: none;
+  appearance: none; border: none; cursor: pointer;
+  background: linear-gradient(135deg, var(--gold), var(--copper)); color: #fff;
+  font-size: 13px; font-weight: 700; padding: 8px 16px; border-radius: 999px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .28);
+}
+.chart-wrap.landscape .ls-exit, .chart-wrap.fullscreen .ls-exit { display: block; }
+
+/* ---------- 竖屏旋转兜底（iOS/微信无法锁定屏幕方向时）----------
+   舞台按横屏比例（屏高×屏宽）渲染标准图表，并整体向右旋转 90°：
+   时间轴沿屏幕长边展开（横轴长），价格轴为短边（纵轴短），同屏数据更多、信息更全。
+   用户若把手机横放，orientationchange 会自动移除本类、切回原生宽图。 */
+.chart-wrap.rotate-fallback .ls-stage {
+  position: fixed; top: 50%; left: 50%; right: auto; bottom: auto;
+  width: 100vh; height: 100vw;
+  padding: 10px;
+  /* 舞台顺时针旋转 90°：局部 上/右/下/左 分别落到屏幕 右/下/左/上，
+     故安全区内边距按旋转后的方位取（竖屏时最大安全区在顶部→局部左缘） */
+  padding: max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left)) max(10px, env(safe-area-inset-top));
+  transform: translate(-50%, -50%) rotate(90deg);
+  transform-origin: center center;
+}
+/* 退出按钮移到屏幕右下：图例随舞台旋转后落在屏幕右上，两者错开。
+   按钮必须与舞台同向旋转 90°（用户反馈 C11：不转的话用户横过手机看图表时，
+   按钮文字相对视线是侧躺的；小程序 full-btn 在旋转的 chart-stage 内天然同向，
+   三端以小程序为基准对齐）。旋转后按钮包围盒 72×33→33×72，bottom 加大防出屏 */
+.chart-wrap.rotate-fallback .ls-exit {
+  top: auto; bottom: max(24px, calc(env(safe-area-inset-bottom) + 12px));
+  transform: rotate(90deg);
+}
+/* 加载提示位于舞台内，反向旋转 90° 保持文字水平（竖屏持握时即可读，
+   与退出按钮方向相反是刻意的：加载时用户尚未横屏，退出时用户已横屏） */
+.chart-wrap.rotate-fallback .chart-loading { transform: rotate(-90deg); }
+/* 横屏提示已按反馈移除：旋转兜底下舞台铺满全屏，任何浮层都会压图，
+   方向信息由「退出」按钮与图表自身表达，不再叠加说明层 */
+
+/* Events */
+/* 事件头：标题与筛选组靠左相邻，更新时间提示级小字推到行末右对齐（margin-left:auto）；
+   窄屏折行时时间行仍靠右，不横在中间 */
+.events-head { display: flex; align-items: center; justify-content: flex-start; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.events-head h2 { font-size: 17px; margin: 0; }
+.events-filter { display: flex; gap: 6px; flex-wrap: wrap; }
+/* 事件更新时间：提示级（10px 弱色），标题行最右 */
+.ev-update { margin-left: auto; font-size: 10px; color: var(--ink-soft); white-space: nowrap; letter-spacing: .2px; }
+/* 价格更新时间：提示级（10px 弱色），跟随筛选区右下角（margin-left:auto 右对齐），
+   不贴统计卡、不独立占行；窄屏折行时仍保持行末右对齐 */
+.price-update {
+  margin-left: auto; font-size: 10px; color: var(--ink-soft);
+  letter-spacing: .2px; line-height: 1.4; white-space: nowrap;
+}
+.event-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.event-item {
+  background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--gold);
+  border-radius: 10px; padding: 12px 14px; box-shadow: var(--shadow);
+}
+/* 卡片信息层级（三端统一，突出重点）：
+   标题（最大字号）→ 元信息行（日期/分类/导向/相关性）→ 标签 → 摘要 → 依据行 → 来源 */
+.event-item .ei-title { font-size: 15px; font-weight: 600; margin: 0 0 8px; line-height: 1.45; }
+.event-item .ei-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 8px; }
+.event-item .ei-date { font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+
+/* 四类胶囊统一规格：同高度（20px）、同圆角（全胶囊）、同字号（11px），
+   只靠配色区分语义——分类=品牌金 / 多空导向=语义红绿灰 / 相关性=强度金灰 / 标签=中性灰 */
+.event-item .ei-cat,
+.event-item .ei-impact,
+.event-item .ei-corr,
+.event-item .ei-tag {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 9px;
+  border-radius: 999px; font-size: 11px; line-height: 1; white-space: nowrap;
+  font-variant-numeric: tabular-nums; flex-shrink: 0;
+}
+.event-item .ei-cat { background: rgba(212,160,23,.14); color: var(--gold-deep); font-weight: 600; }
+/* C12-1：多空导向推到元信息行右端（与小程序 .ev-impact 的 margin-left:auto 同口径）——
+   日期+分类靠左（事件属性），利多/利空+相关性靠右（结论属性），两端各归其位 */
+.event-item .ei-impact { font-weight: 600; margin-left: auto; }
+.impact-up { background: rgba(226,59,59,.14); color: var(--up); }
+.impact-down { background: rgba(31,170,89,.16); color: var(--down); }
+.impact-mixed { background: rgba(127,127,127,.16); color: var(--ink-soft); }
+/* 标签是弱化的关键词，用中性灰，不与一级语义胶囊抢眼 */
+.ei-tag { background: #eef0f4; color: var(--ink-soft); font-weight: 500; }
+.event-item .ei-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.event-item .ei-summary { font-size: 13px; color: var(--ink-soft); line-height: 1.6; margin: 0 0 8px; }
+.event-item .ei-source { font-size: 11px; color: var(--ink-soft); opacity: .85; margin: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ei-link { color: var(--gold-deep); text-decoration: none; font-weight: 600; }
+.ei-link:hover { text-decoration: underline; }
+
+/* 事件-价格相关性指数（事件研究法） */
+.corr-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: -4px 0 12px; }
+.corr-avg { font-size: 12px; color: var(--ink-soft); }
+.corr-avg b { color: var(--gold-deep); font-size: 14px; }
+.corr-method {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 14px 16px; margin-bottom: 14px; font-size: 12.5px; color: var(--ink-soft); line-height: 1.75;
+  box-shadow: var(--shadow);
+}
+/* 事件区标题里的品种标识：明示「事件跟随当前品种」 */
+.ev-metal { font-size: 13px; font-weight: 600; color: var(--gold-deep); margin-left: 8px; }
+.corr-method p { margin: 0 0 8px; }
+.corr-method ol { margin: 0 0 8px; padding-left: 20px; }
+.corr-method li { margin-bottom: 4px; }
+.corr-method b { color: var(--ink); }
+.corr-method-note { font-size: 12px; opacity: .85; margin-bottom: 0 !important; }
+/* 相关性胶囊：四类统一规格见上；强度语义配色 + 计算依据 tooltip */
+.event-item .ei-corr { font-weight: 700; cursor: help; }
+.event-item .ei-corr b { font-size: 12.5px; }
+.ci-strong { background: rgba(212,160,23,.18); color: var(--gold-deep); border: 1px solid rgba(212,160,23,.45); }
+.ci-mid { background: rgba(212,160,23,.09); color: var(--gold-deep); border: 1px solid rgba(212,160,23,.25); }
+.ci-weak { background: rgba(127,127,127,.10); color: var(--ink-soft); border: 1px solid var(--line); }
+.ci-none { background: transparent; color: var(--ink-soft); border: 1px dashed var(--line); font-weight: 500 !important; }
+.event-item .ei-corr-basis {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 3px 14px;
+  font-size: 11.5px; color: var(--ink-soft); margin: 0 0 8px; padding-top: 6px;
+  border-top: 1px dashed var(--line); font-variant-numeric: tabular-nums;
+}
+.event-item .ei-corr-basis .cb { white-space: nowrap; }
+.event-item .ei-corr-basis b { color: var(--ink); font-weight: 600; }
+.ei-corr-basis.ei-basis-none { color: var(--ink-soft); opacity: .8; }
+.ei-corr-basis .cb-open { font-style: normal; opacity: .72; margin-left: 5px; font-size: 10.5px; }
+/* 方向结论不用红/绿（利多事件配「绿」字有歧义）：一致=金色强调，背离/中性=灰 */
+.dir-ok { color: var(--gold-deep); font-weight: 600; }
+.dir-bad { color: var(--ink-soft); }
+.dir-neutral { color: var(--ink-soft); }
+
+/* Pager：三端统一为单行紧凑三件套，任何屏宽都不折行 */
+.pager {
+  display: flex; align-items: center; justify-content: center;
+  gap: 10px; margin-top: 16px;
+  flex-wrap: nowrap; white-space: nowrap;
+}
+.pager button {
+  appearance: none; border: 1px solid var(--line); background: var(--panel); cursor: pointer;
+  min-width: 34px; height: 34px; border-radius: 9px; color: var(--ink); font-size: 13px;
+}
+.pager .pg-nav {
+  min-width: auto; height: 30px; padding: 0 12px; border-radius: 999px; font-size: 12px; flex: 0 0 auto;
+}
+.pager .pg-info {
+  flex: 0 1 auto; font-size: 11.5px; color: var(--ink-soft);
+  overflow: hidden; text-overflow: ellipsis;
+}
+.pager button.active { background: linear-gradient(135deg, var(--gold), var(--copper)); color: #fff; border-color: transparent; font-weight: 700; }
+.pager button:disabled { opacity: .4; cursor: not-allowed; }
+
+/* Footer：三端统一的结构化说明分区 */
+.app-footer { max-width: 1180px; margin: 0 auto; padding: 20px; color: var(--ink-soft); font-size: 12.5px; border-top: 1px solid var(--line); }
+.app-footer p { margin: 6px 0; }
+.update-policy { color: var(--gold-deep); font-weight: 600; }
+.copyright { opacity: .8; }
+.foot-sec {
+  margin-top: 10px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--panel); overflow: hidden;
+}
+.foot-sec > summary {
+  padding: 10px 12px; font-size: 12.5px; font-weight: 600; color: var(--ink);
+  cursor: pointer; list-style: none; user-select: none;
+}
+.foot-sec > summary::-webkit-details-marker { display: none; }
+.foot-sec > summary::before { content: "▸ "; color: var(--gold); }
+.foot-sec[open] > summary::before { content: "▾ "; }
+.foot-body { padding: 0 12px 12px; font-size: 12px; line-height: 1.8; }
+.foot-body p { margin: 6px 0; }
+.foot-body ol { margin: 6px 0 6px 18px; padding: 0; }
+.foot-body li { margin: 4px 0; }
+
+/* ---------- 移动端适配 ---------- */
+@media (max-width: 768px) {
+  .app-header { padding: 10px 14px; flex-wrap: wrap; }
+  .titles h1 { font-size: 16px; }
+  .metal-tabs { padding: 10px 14px 0; }
+  .container { padding: 12px 14px 32px; }
+  .controls { gap: 8px 12px; padding: 10px 12px; }
+  /* 窄屏 chip 压缩：让「粒度+市场」在 390px 屏同一行（实测估算 ~348px < 358px 可用宽），
+     不折行、不拆东墙修西墙；单位与价格时间落第二行行末右对齐 */
+  .control-group { gap: 6px; }
+  .cg-label { font-size: 11px; }
+  .control-group .chip { padding: 2px 8px; font-size: 11px; }
+  .stats { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .stat-card { min-height: 80px; padding: 10px 12px; }
+  .stat-card .v { font-size: 18px; }
+  #chart { height: 360px; }
+  .events-head h2 { font-size: 15px; }
+  .event-item .ei-title { font-size: 14px; }
+}
+@media (max-width: 380px) {
+  .stats { grid-template-columns: 1fr; }
+}
+
+/* C12-2：PC 宽屏事件卡片舒展（用户反馈：大屏不需要手机式的紧凑，太凌乱）——
+   内边距/行距/字号整体放大，摘要限最大可读行宽，列表间距拉开 */
+@media (min-width: 1025px) {
+  .event-list { gap: 16px; }
+  .event-item { padding: 22px 26px; border-radius: 12px; }
+  .event-item .ei-title { font-size: 17px; margin: 0 0 12px; }
+  .event-item .ei-top { gap: 8px; margin: 0 0 12px; }
+  .event-item .ei-cat, .event-item .ei-impact, .event-item .ei-corr, .event-item .ei-tag {
+    height: 24px; padding: 0 12px; font-size: 12px;
+  }
+  .event-item .ei-corr b { font-size: 13.5px; }
+  .event-item .ei-tags { gap: 8px; margin: 0 0 12px; }
+  /* 卡片实测内容宽 1088px（1280 视口），正文不限宽会拉到 77 字/行——读起来累，
+     限 46em（≈46 汉字/行）保住可读行宽，卡片本身仍占满，右侧自然留白不显空 */
+  .event-item .ei-summary { font-size: 14px; line-height: 1.8; max-width: 46em; margin: 0 0 12px; }
+  .event-item .ei-corr-basis { font-size: 12.5px; line-height: 1.8; max-width: 52em; margin: 0 0 12px; }
+  .event-item .ei-source { font-size: 12px; gap: 14px; }
+}
+
+/* 事件头：「时间贴标题一行」覆盖到 1024px（含 iPad 竖屏 810/834、小窗口、全部手机），
+   宽屏 PC（>1024）才用 h2→筛选→时间的单行布局。
+   用户反馈 C09：事件更新时间要跟「重大事件」同一行，而不是折到分类筛选器之后/下方。
+   用 order 重排不动 DOM 顺序——C07 教训：margin-left:auto 只推该元素之前的空间，
+   若把 ev-update 排到筛选组之前（display:contents 包装器也等效），它会被挤到中间而非行末 */
+@media (max-width: 1024px) {
+  .events-head h2 { order: 1; }
+  .ev-update { order: 2; }
+  .events-filter { order: 3; flex: 1 1 100%; gap: 5px; }
+  .events-filter .chip { padding: 2px 8px; font-size: 11px; }
+}

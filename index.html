@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>金属价格收集 · 金 / 银 / 铜</title>
+  <meta name="description" content="金属价格收集：金、银、铜的国内/香港/伦敦多市场报价与重大事件，支持年/月/天/时曲线与时间轴滑动缩放。" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="head-fixed">
+    <header class="app-header">
+      <div class="brand">
+        <div class="logo">Au·Ag·Cu</div>
+        <div class="titles">
+          <h1>金属价格收集</h1>
+          <p class="subtitle">黄金 · 白银 · 铜 ｜ 国内 / 香港 / 伦敦 多市场</p>
+        </div>
+      </div>
+      <div class="header-meta">
+        <!-- 徽章初始态为「加载中…」：数据未到位前不预设真假属性（C08 反馈：初始展示「建模数据」误导），
+             加载后由 app.js 按 dataMode 覆写为 真实数据/真实现货/缓存数据 -->
+        <span id="dataModeBadge" class="badge badge-warn" title="数据说明">加载中…</span>
+        <span class="update-time">更新：<b id="lastUpdate">—</b></span>
+      </div>
+    </header>
+
+    <nav class="metal-tabs" id="metalTabs" role="tablist">
+      <button class="tab active" data-metal="gold" role="tab">黄金</button>
+      <button class="tab" data-metal="silver" role="tab">白银</button>
+      <button class="tab" data-metal="copper" role="tab">铜</button>
+    </nav>
+  </div>
+
+  <main class="container">
+    <!-- 筛选区：粒度 → 市场 → 单位 一行对齐（flex，窄屏自然折行）；
+         价格更新时间作提示信息跟随筛选区右下角，不贴统计卡、不独立占行 -->
+    <section class="controls">
+      <div class="control-group granularity">
+        <span class="cg-label">粒度</span>
+        <button class="chip" data-gran="year">年</button>
+        <button class="chip" data-gran="month">月</button>
+        <button class="chip active" data-gran="day">天</button>
+        <button class="chip" data-gran="hour">时</button>
+      </div>
+      <div class="control-group markets">
+        <span class="cg-label">市场</span>
+        <button class="chip" data-market="london">伦敦</button>
+        <button class="chip active" data-market="domestic">国内</button>
+        <button class="chip" data-market="hongkong">香港</button>
+      </div>
+      <div class="control-group unit-toggle" id="unitToggle">
+        <span class="cg-label">单位</span>
+        <button class="chip" data-unit="native">原始单位</button>
+        <button class="chip active" data-unit="gram">元/克</button>
+      </div>
+      <span class="price-update" id="priceUpdate"></span>
+    </section>
+
+    <section class="stats" id="stats"></section>
+
+    <section class="chart-wrap" id="chartWrap">
+      <div class="ls-stage" id="lsStage">
+        <div id="chart"></div>
+        <div id="chartLoading" class="chart-loading">数据加载中…</div>
+      </div>
+      <button id="landscapeBtn" class="ls-btn" title="横屏放大查看（手机）">⛶ 横屏放大</button>
+      <button id="fsBtn" class="fs-btn" title="全屏查看（PC）">⛶ 全屏</button>
+      <button id="exitLandscape" class="ls-exit" title="退出全屏">✕ 退出</button>
+    </section>
+
+    <section class="events">
+      <div class="events-head">
+        <h2>重大事件<span class="ev-metal" id="eventsMetal"></span></h2>
+        <div class="events-filter" id="eventFilter">
+          <button class="chip active" data-cat="all">全部</button>
+          <button class="chip" data-cat="货币政策">货币政策</button>
+          <button class="chip" data-cat="地缘政治">地缘政治</button>
+          <button class="chip" data-cat="供需">供需</button>
+          <button class="chip" data-cat="市场">市场</button>
+        </div>
+        <!-- 事件更新时间：提示级小字，标题行行末右对齐（必须在筛选组之后——margin-left:auto
+             只推该元素之前的空间，放筛选组前会被挤到中间而非行末，C07 实测教训） -->
+        <span class="ev-update" id="eventsUpdate"></span>
+      </div>
+      <div class="corr-bar">
+        <span class="corr-avg" id="corrAvg"></span>
+      </div>
+      <ul class="event-list" id="eventList"></ul>
+      <div class="pager" id="pager"></div>
+    </section>
+  </main>
+
+  <!-- 底部说明：三端统一，按「数据说明 / 事件分类与归纳 / 相关性指数计算方法 / 更新与免责」四类归纳 -->
+  <footer class="app-footer">
+    <details class="foot-sec">
+      <summary>数据来源与发布链路</summary>
+      <div class="foot-body">
+        <p id="disclaimer">数据说明：全部为<strong>真实数据</strong>——伦敦价为新浪国际期货日K（COMEX 黄金/白银连续、COMEX 铜连续），最新价为 gold-api.com 实时现货；国内价为东方财富真实日K（上海金交所 AU9999 元/克、白银T+D 元/千克、沪铜主连 元/吨）；香港价按每日真实汇率（Frankfurter）折算；小时线仅采用真实 60 分钟K。</p>
+        <p>发布链路：定时收集（每 15 分钟）→ 校验（条数/时间递增/数值范围/单日跳变/无大段缺失/末端新鲜度/与真实现货交叉核对）→ 清洗 → 入库 → 发布，任一校验不通过则保留上一版数据。非交易时段以虚线表示价格延续。</p>
+      </div>
+    </details>
+
+    <details class="foot-sec">
+      <summary>事件分类与归纳</summary>
+      <div class="foot-body">
+        <p>事件按 <b>货币政策 · 地缘政治 · 供需 · 市场</b> 四类归纳；来源为公开财经资讯（WSJ / CNBC）定时抓取，跨源聚类去重后生成标题、摘要与标签。</p>
+        <p>入库前统一去重：同一事件按「标题指纹 / 摘要指纹 / 同日标题互含 / 近日期近义」判定，同一条宏观事件只保留一份正本，并在正本上标注它影响的品种（金 / 银 / 铜），按品种查看不丢、合并查看不重。</p>
+        <p>每条事件标注 <b>利多 / 利空 / 中性</b> 的多空导向（即该事件对价格的预期影响方向），该导向同时参与相关性指数的方向一致性计分。</p>
+        <p>事件由脚本批量抓取与归纳生成，可能存在归类偏差，仅供研究参考。</p>
+      </div>
+    </details>
+
+    <details class="foot-sec">
+      <summary>相关性指数计算方法（事件研究法）</summary>
+      <div class="foot-body">
+        <p><b>相关性指数（0–100）</b>衡量每条重大事件对对应金属价格的实际影响强度，采用金融学标准 <b>事件研究法</b>（Event Study，Fama et al. 1969；MacKinlay 1997）计算：</p>
+        <ol>
+          <li><b>估计窗</b>：取事件日前 <b>120 个交易日</b>的日收益率，计算正常收益均值 μ 与标准差 σ（无市场指数，采用均值调整模型）；</li>
+          <li><b>事件窗</b>：事件当日起 <b>5 个交易日</b>（事件日为非交易日则顺延至下一交易日）；异常收益 AR<sub>t</sub> = 日收益 − μ，累计得 CAR；</li>
+          <li><b>显著性</b>：t = CAR /（σ × √窗口天数），|t| ≥ 1.658 / 1.980 / 2.618 分别对应 10% / 5% / 1% 显著性水平；</li>
+          <li><b>指数合成</b>：显著性 50 分（|t| ≥ 2.58 满分，线性折算）+ 方向一致性 30 分（多空导向与 CAR 同向满分、背离 0、中性 15 分）+ 量级 20 分（|CAR| ≥ 3σ 满分，线性折算）。</li>
+        </ol>
+        <p class="corr-method-note">指数 ≥70 为强、40–69 为中、&lt;40 为弱；数据窗口不足时显示「—」。基于国内日 K 收盘价（缺失时回退伦敦），仅供研究参考，不构成投资建议。</p>
+      </div>
+    </details>
+
+    <details class="foot-sec">
+      <summary>更新与免责</summary>
+      <div class="foot-body">
+        <p id="updatePolicyFoot">更新策略：每 15 分钟定时抓取并校验发布 ｜ 日线为真实收盘价 ｜ 历史覆盖近 5 年</p>
+        <p>© 金属价格收集 · 仅供研究参考，不构成投资建议。本程序仅提供价格信息展示，不涉及任何交易、回收或投资咨询服务。</p>
+      </div>
+    </details>
+  </footer>
+
+    <script>window.__STATIC__ = 1;</script>
+  <script src="js/vendor/echarts.min.js"></script>
+  <script src="js/event-dedupe.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

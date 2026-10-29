@@ -1,0 +1,30 @@
+name: 例行刷新贵金属数据
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: 刷新价格曲线、现货与重大事件（价格与事件同批次入库）
+        run: node generate-all.js
+      - name: 提交
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data
+          if git diff --cached --quiet; then echo "无变化"; else git commit -m "chore: 例行刷新 $(date -u +%Y-%m-%dT%H:%M:%SZ)"; git push; fi
+      # 数据健康巡检：价格/事件停更、校验未过、事件源全停 → 微信告警（配置了 webhook 才发）
+      - name: 数据健康巡检与异常告警
+        if: always()
+        env:
+          WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
+          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+        run: node tools/notify_run.js check
