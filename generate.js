@@ -285,7 +285,13 @@ async function fetchRealSeries(metal, rates) {
 
 // 真实 60 分钟K（国内日内），失败返回 null
 async function fetchHourlyReal(metal) {
-  const bars = await fetchEMKline(EM_SECID[metal], 60, 400).catch(() => null);
+  // 【C22 抗抖动】东财 60 分钟 K 源实测会偶发少返/空返（同一 URL 111/117 根）→ 重试 2 次
+  let bars = null;
+  for (let i = 0; i < 3; i++) {
+    bars = await fetchEMKline(EM_SECID[metal], 60, 400).catch(() => null);
+    if (bars && bars.length >= 20) break;
+    if (i < 2) await new Promise((r) => setTimeout(r, 800));
+  }
   if (!bars || bars.length < 20) return null;
   const sc = EM_SCALE[metal];
   return bars.map((p) => [p[0], round2(p[1] * sc)]);
@@ -296,11 +302,24 @@ function buildHourlyFromReal(hRealD, D, L, rates) {
   if (!hRealD || hRealD.length < 20 || !D.length || !L.length) return null;
   const dMap = new Map(D.map((p) => [p[0], p[1]]));
   const lMap = new Map(L.map((p) => [p[0], p[1]]));
+  // 【C22 抗抖动】当天没有收盘价时用「当天或之前最近一个收盘价」，
+  //   否则日线缺一天就会把整天的小时线丢掉（平台端新浪日线取不到时最典型）。
+  const dDays = Array.from(dMap.keys()).sort((a, b) => a - b);
+  const lDays = Array.from(lMap.keys()).sort((a, b) => a - b);
+  function closeAtOrBefore(days, map, dayMs) {
+    let lo = 0, hi = days.length - 1, hit = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (days[mid] <= dayMs) { hit = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    return hit >= 0 ? map.get(days[hit]) : null;
+  }
   const out = { london: [], domestic: [], hongkong: [] };
   let dropped = 0;
   for (const [ms, dv] of hRealD) {
     const dayMs = ms - (ms % 86400000);
-    const dClose = dMap.get(dayMs), lClose = lMap.get(dayMs);
+    const dClose = dMap.has(dayMs) ? dMap.get(dayMs) : closeAtOrBefore(dDays, dMap, dayMs);
+    const lClose = lMap.has(dayMs) ? lMap.get(dayMs) : closeAtOrBefore(lDays, lMap, dayMs);
     if (!dClose || !lClose || dClose <= 0) continue;
     // 清洗：数据源偶发量纲异常bar（如沪铜主连 2026-09-23 夜盘出现约 111 倍脏数据），
     // 偏离当日收盘超过 60% 即剔除，避免污染小时线 Y 轴与统计
@@ -635,8 +654,10 @@ async function generateAll(preSpot) {
     }
     // 5) 校验：通过才清洗入库并发布；不通过则保留上一版已发布数据（不覆盖）
     let prevLast = null;
+    let prevHourly = null;
     try {
       const prev = JSON.parse(fs.readFileSync(path.join(DATA_DIR, metal + ".json"), "utf-8"));
+      if (prev && prev.hourly && prev.hourly.london && prev.hourly.london.length) prevHourly = prev.hourly;
       if (prev && prev.series && prev.series.domestic && prev.series.domestic.length) {
         prevLast = prev.series.domestic[prev.series.domestic.length - 1][1];
       }
@@ -650,6 +671,12 @@ async function generateAll(preSpot) {
     }
     health.validation = health.validation || {};
     health.validation[metal] = "ok";
+    // 【C22 抗抖动】本轮小时线为空时沿用磁盘上一版已发布的小时线（不抹成空数组），
+    //   否则一次网络抖动就会让端上「时」按钮永久失效。
+    if ((!hL || !hL.length) && prevHourly && prevHourly.london && prevHourly.london.length) {
+      hL = prevHourly.london; hD = prevHourly.domestic; hH = prevHourly.hongkong;
+      hourlyNote = "小时线沿用上一轮已发布数据（本轮 60 分钟K 源未返回合格数据），将在下一次例行抓取自动刷新。";
+    }
     const payload = buildPayload(metal, cfg, L, D, H, hL, hD, hH, lastUpdate, dataMode, fx);
     if (spotInfo) payload.spot = spotInfo;
     if (hourlyNote) payload.hourlyNote = hourlyNote;
@@ -696,30 +723,66 @@ function buildPayload(metal, cfg, L, D, H, hL, hD, hH, lastUpdate, dataMode, fx)
 // WSJ 两源自 2025-01 停更（实测最新条目停更 638 天），靠 FEED_STALE_DAYS 门禁自动跳过；
 // 保留定义是为了它哪天复活时能自动恢复供料（源健康度面板会持续显示 stale 状态）。
 // 2026-10-28 补源：实测可用且条目新鲜的三个源（Kitco/Mining/Yahoo/Investing 均 403/404，BBC/Guardian 连不上）
+// 【C21】分别抓取国内 / 外 top 主流平台：已逐一探活（"能拿到的"才接）。
+//   · 境外（intl）：CNBC ×5（含商品专属）、MarketWatch、SeekingAlpha、FXStreet
+//     （WSJ ×2 停更 639 天，FEED_STALE_DAYS=7 自动跳过；Yahoo/Investing/Reuters/Kitco 被墙/路径错）
+//   · 国内（cn）：东方财富快讯、华尔街见闻快讯、新浪财经滚动（中文标题天然人话）
 const FEEDS = [
-  { name: "WSJ 市场", url: "https://feeds.a.dj.com/rss/RSSMarketsMain.xml" },
-  { name: "WSJ 国际", url: "https://feeds.a.dj.com/rss/RSSWorldNews.xml" },
-  { name: "CNBC 市场", url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839135" },
-  { name: "CNBC 经济", url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258" },
-  { name: "CNBC 头条", url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114" },
-  { name: "CNBC 商务", url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10001147" },
-  { name: "MarketWatch 头条", url: "https://feeds.content.dowjones.io/public/rss/mw_topstories" },
+  // —— 境外主流（intl）——
+  { name: "WSJ 市场", region: "intl", url: "https://feeds.a.dj.com/rss/RSSMarketsMain.xml" },
+  { name: "WSJ 国际", region: "intl", url: "https://feeds.a.dj.com/rss/RSSWorldNews.xml" },
+  { name: "CNBC 市场", region: "intl", url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839135" },
+  { name: "CNBC 经济", region: "intl", url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258" },
+  { name: "CNBC 头条", region: "intl", url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114" },
+  { name: "CNBC 商务", region: "intl", url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10001147" },
+  { name: "CNBC 商品", region: "intl", url: "https://www.cnbc.com/id/10000664/device/rss/rss.html" },
+  { name: "MarketWatch 头条", region: "intl", url: "https://feeds.content.dowjones.io/public/rss/mw_topstories" },
+  // 【C21】境外主流财经源（已探活）：SeekingAlpha 市场快讯、FXStreet 外汇/金属
+  { name: "SeekingAlpha", region: "intl", url: "https://seekingalpha.com/market_currents.xml" },
+  { name: "FXStreet", region: "intl", url: "https://www.fxstreet.com/rss/news" },
+  // —— 国内主流（cn）——
   // 【C20 补国内源】用户反馈「美联储的不加息，你还没收录进来」——境外源的中文归纳只能给出
   // 「美联储·楼市：多空交织」这类关键词拼装，用户看不出发生了什么；国内源给的是**中文原文**
   // （如「香港金管局回应美联储议息决定：…维持联邦基金利率目标区间于3.75-4厘」），才是用户要的信息。
-  { name: "东方财富快讯", kind: "eastmoney", url: "https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_50_1_.html",
+  { name: "东方财富快讯", region: "cn", kind: "eastmoney", url: "https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_50_1_.html",
     headers: { Referer: "https://kuaixun.eastmoney.com/" } },
-  { name: "华尔街见闻快讯", kind: "wallstreetcn", url: "https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=global-channel&limit=50",
+  { name: "华尔街见闻快讯", region: "cn", kind: "wallstreetcn", url: "https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=global-channel&limit=50",
     headers: { Origin: "https://wallstreetcn.com" } },
+  // 【C21】国内 top 门户源（已探活）：新浪财经滚动（中文标题天然人话）
+  //   lid=2518 宏观/央行（美联储/加息/金价展望），lid=2516 贵金属行情（金价/白银）
+  //   两个子频道分别抓取，再交由跨源聚类按中文事实标题并合成一条（重叠自动合并）
+  { name: "新浪财经·宏观", region: "cn", kind: "sina", url: "https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2518&num=50&page=1" },
+  { name: "新浪财经·贵金属", region: "cn", kind: "sina", url: "https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2516&num=50&page=1" },
+  // —— 【C22 权威官方源】用户要求「尽量展示权威信息、事件」——
+  //   官方机构原始发布 > 门户转述。已实测 200 可用：
+  //   · 美联储官方新闻稿（FOMC 声明、纪要）—— 金银定价最权威的一手来源
+  //   · 欧洲央行官方新闻稿 —— 欧元区货币政策的原始出处
+  //   · 国家统计局数据发布 —— 国内宏观数据的官方口径（GDP/工业利润/生产资料价格）
+  { name: "美联储官方", region: "official", url: "https://www.federalreserve.gov/feeds/press_monetary.xml" },
+  { name: "欧洲央行官方", region: "official", url: "https://www.ecb.europa.eu/rss/press.html" },
+  { name: "国家统计局", region: "official", url: "https://www.stats.gov.cn/sj/zxfb/rss.xml" },
+  // —— 【C22 铜专属通道】铜是工业金属，其驱动来自「矿端产量/冶炼/加工费/库存/工业需求」，
+  //   而不是美联储/美元这类货币宏观。SMM（上海有色网）是有色金属行业一手权威信源，
+  //   已实测 RSS 可用：spot 频道含「矿端干扰较多 沪铜偏强运行」「COMEX金属库存」等铜一手行情，
+  //   macro 频道含美联储/汇率口径（用于金银）。故铜单独走 SMM 通道。
+  { name: "SMM有色·现货", region: "cn", url: "https://news.smm.cn/rss/spot" },
+  { name: "SMM有色·宏观", region: "cn", url: "https://news.smm.cn/rss/macro" },
+  // original 频道：有色金属一手快讯（含铜矿产量/冶炼/精矿/加工费等真正的铜供需信息）
+  { name: "SMM有色·快讯", region: "cn", url: "https://news.smm.cn/rss/original" },
 ];
 // 源停更判定：最新一条 pubDate 超过这么多天，该源判「陈旧」，其条目不再入库。
 // 真实案例：WSJ 两个 feed 停更在一年多前，旧闻每 15 分钟混进候选池，
 // 与历史库标题碰撞后在去重环节被合并吞掉，白抓还污染统计。
 const FEED_STALE_DAYS = 7;
+// 【C22】每个品种每天最多保留多少条事件（超出部分按权威度 + 相关性择优）
+const PER_DAY_LIMIT = 8;
 const METAL_KEYS = {
   gold: [/\bgold\b/i, /bullion/i, /金价|黄金/i, /comex/i, /precious metal/i],
   silver: [/\bsilver\b/i, /银价|白银/i, /comex/i, /precious metal/i],
-  copper: [/\bcopper\b/i, /铜价|沪铜|精铜|阴极铜/i, /\blme\b/i, /base metal/i, /industrial metal/i, /dr copper/i],
+  // 【C22】铜 = 工业金属，关键词聚焦「铜本身 + 工业驱动（电网/电缆/基建/矿端公司）」。
+  //   不再依赖宏观键继承；光伏/新能源虽属工业但不特指铜（更多指向白银/锂），故不纳入铜关键词，
+  //   避免把银/锂事件误灌进铜。铜的宏观联动（如中国刺激）由「基建/电网/制造业」等工业词命中。
+  copper: [/\bcopper\b/i, /铜价|沪铜|精铜|阴极铜|伦铜|电解铜|废铜|铜精矿|铜矿|铜库存|铜需求|铜消费|铜供应|铜加工|铜冶炼|铜杆|铜管|铜箔|铜产量|铜产能|铜加工费|铜期权/i, /\blme\b/i, /base metal|industrial metal/i, /电网|电缆|基建|智利|必和必拓|自由港|南方铜业|洛阳钼业|江西铜业|铜陵有色|嘉能可|glencore|自由港|freeport|秘鲁|peru|刚果|congo/i],
 };
 const MACRO_KEYS = [
   /\bfed\b/i, /federal reserve/i, /central bank|央行/i, /rate cut|降息|加息|利率/i,
@@ -732,13 +795,32 @@ function stripText(s) {
   return String(s)
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
     .replace(/<[^>]+>/g, "")
-    .replace(/&apos;/g, "'").replace(/&#0?39;/g, "'").replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'").replace(/&#0?39;/g, "'").replace(/&quot;/g, '"').replace(/&#34;/g, '"').replace(/&#(\d+);/g, function (_, d) { return String.fromCharCode(d); })
     .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
     .replace(/\s+/g, " ").trim();
 }
 function pickTag(block, tag) {
   const m = block.match(new RegExp("<" + tag + ">([\\s\\S]*?)</" + tag + ">", "i"));
   return m ? stripText(m[1]) : null;
+}
+// 【C22】pubDate 归一化：部分国内 RSS 用中文月份格式（如 SMM 的「周四,29 10月 2026 02:31:18 +0800」），
+//   Date.parse 会返回 NaN → 源新鲜度判定失效（"最新=无 / 9999 天前"）→ 整源被跳过。
+//   这里先把中文月份/周几转成英文月份，再交给标准解析器；同时兼容「2026-10-29 02:31:18」这类写法。
+const CN_MONTHS = { "1月": "Jan", "2月": "Feb", "3月": "Mar", "4月": "Apr", "5月": "May", "6月": "Jun", "7月": "Jul", "8月": "Aug", "9月": "Sep", "10月": "Oct", "11月": "Nov", "12月": "Dec" };
+function normalizePubDate(s) {
+  var t = String(s || "").trim();
+  if (!t) return "";
+  // 中文周几开头：「周四,29 10月 2026 02:31:18 +0800」→「29 Oct 2026 02:31:18 +0800」
+  var cn = t.match(/^(?:周[一二三四五六日天],|星期[一二三四五六日天],|周[一二三四五六日天]\s*)?(\d{1,2})\s*(1[0-2]|[1-9])月\s*(\d{4})\s+(.+)$/);
+  if (cn) {
+    var mm = CN_MONTHS[cn[2] + "月"];
+    if (mm) t = cn[1] + " " + mm + " " + cn[3] + " " + cn[4];
+  } else {
+    // 「2026-10-29 02:31:18」/「2026-10-29T02:31:18+08:00」→ 补上时区，避免被当本地时间
+    var iso = t.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(.*)$/);
+    if (iso && !/[Zz]|[+-]\d{2}:?\d{2}$/.test(iso[3])) t = iso[1] + "T" + iso[2] + "+08:00";
+  }
+  return t;
 }
 function parseRSS(xml) {
   const out = [];
@@ -749,7 +831,7 @@ function parseRSS(xml) {
     out.push({
       title,
       link: pickTag(b, "link"),
-      pub: pickTag(b, "pubDate"),
+      pub: normalizePubDate(pickTag(b, "pubDate")),
       desc: pickTag(b, "description") || "",
     });
   }
@@ -779,12 +861,31 @@ function isoDate(s) {
   if (isNaN(d.getTime())) return new Date().toISOString().slice(0, 10);
   return d.toISOString().slice(0, 10);
 }
-// 判定该条新闻归属哪些品种；宏观类事件三个品种均计入
+// 判定该条新闻归属哪些品种
+// 【C22】金银 = 货币属性（避险 / 实际利率 / 美元 / 宏观），铜 = 工业金属（供需 / 中国工业 / 矿端）。
+//   宏观键（Fed/美元/通胀/利率…）只归金银，不再自动带铜——这是「铜的信息展示到金里」的根因，已修复。
+//   铜仅由铜专属关键词（铜价/沪铜/伦铜/铜矿/电网/基建/矿端公司…）路由，保证铜事件干净、独立。
 function routeMetal(t) {
+  // 【C22 用户反馈】「铜的信息展示到金里了。金银铜属性有差异、使用场景有差异，
+  //   抓取和相关性计算也应该有差异」—— 本函数是「铜串金」的根因所在。
+  //   改法（两层判定，铜/金银走完全不同的口径）：
+  //   ① 第一层「显式金属词」：文本里点名了哪个金属，就只归哪个金属（不再互相继承）。
+  //      例：「美联储降息，铜价上涨」→ 命中 copper → 只归铜，不再因为含 Fed 就把铜灌进金银。
+  //   ② 第二层「差异化相关性」：第一层没命中时，按金属各自的属性口径算相关性：
+  //      · 金银 = 货币属性（避险/实际利率/美元/央行/通胀）→ macro 命中归金银
+  //      · 铜   = 工业属性（矿端/冶炼/加工费/库存/电网/基建/中国制造）
+  //                → 纯宏观（Fed/美元/通胀）与铜**无关**，宏观命中也不再带上铜。
+  //   这样铜只收「真正在讲铜」的事件，金银只收「真正与货币定价相关」的事件。
+  const s = String(t || "");
   const hits = [];
-  for (const m of ["gold", "silver", "copper"]) if (METAL_KEYS[m].some((r) => r.test(t))) hits.push(m);
-  if (hits.length) return hits;
-  if (MACRO_KEYS.some((r) => r.test(t))) return ["gold", "silver", "copper"];
+  for (const m of ["gold", "silver", "copper"]) if (METAL_KEYS[m].some((r) => r.test(s))) hits.push(m);
+  if (hits.length) return hits;                                    // 显式金属词 → 仅该品种
+  // 铜的差异化相关性：必须是铜的工业属性话题（供需/矿端/冶炼/库存/工业需求）。
+  //   注意这里用 copperRelevant 而非 copperRelevance>=1：只要文本明确在讲铜就收，
+  //   宏观词（美联储/美元）不会让 copperRelevant 命中 → 铜不会被宏观污染。
+  if (NF.copperRelevant(s)) return ["copper"];
+  // 金银的货币属性：宏观货币事件归金银（铜不继承）。
+  if (MACRO_KEYS.some((r) => r.test(s))) return ["gold", "silver"];
   return [];
 }
 function impactOf(t) {
@@ -856,18 +957,128 @@ function zhTags(t) {
   return tags.slice(0, 4);
 }
 function zhTitle(t, tags) {
-  const dir = impactOf(t);
-  const dirZh = dir === "up" ? "利多驱动" : dir === "down" ? "利空压制" : "多空交织";
-  // 【C20 具体化】标题主体优先用「具体发生了什么」，而不是关键词拼装：
-  //   · 英文标题 → 规则化事实抽取（"Fed leaves rates unchanged" → "美联储维持利率不变（不加息）"）
-  //   · 中文标题 → 直接用中文原文标题（国内快讯本身就是人话）
-  // 否则用户看到的只会是「美联储·楼市：多空交织」，完全不知道这条讲的是什么。
+  // 【C22 用户反馈】「标题…的信息，不知所云。与事件的概括、影响结论/预测，对不上」
+  //   三条改法：
+  //   ① 中文原文（国内源，天然人话）直接作标题，且**不再硬切 26 字**——
+  //      硬切会产生「市场目前仍预期美联储12月加息可能性较…」这种残句，
+  //      残句既不完整、也与摘要对不上。改为按语义边界（标点）截断，保留完整短句。
+  //   ② 英文源优先「规则化事实」→ 再「可读译文」，两步都拿不到具体信息时才走末路。
+  //   ③ 末路不再是「标签·标签：方向」拼装（信息量为零），改为**实体句**：
+  //      「美联储相关动向公布」这类至少能说明是什么事，而不是「通胀·加息：利多驱动」。
   const cn = /[\u4e00-\u9fa5]/.test(t) ? NF.cleanCnHeadline(t).replace(/[，。；、：]+$/, "") : "";
-  if (cn.length >= 6) return cn.slice(0, 22) + (cn.length > 22 ? "…" : "") + "：" + dirZh;
+  if (cn.length >= 6) return trimCnTitle(cn);
+  // ② 英文具体事实（规则化抽取，如「美联储维持利率不变（不加息）」「美国通胀率 3.5%」）
   const fd = NF.zhFactDetail(t);
-  if (fd.text && !fd.generic) return fd.text.slice(0, 22) + "：" + dirZh;
-  const head = (tags || []).filter((x) => x !== "走强" && x !== "走弱").slice(0, 2).join("·") || "国际市场";
-  return head + "：" + dirZh;
+  if (fd.text && !fd.generic) {
+    // 【C22】主语补全：原文说的是金/银/铜价，但规则化抽取只给了驱动因素
+    //   （「Gold weakens below $4,050 amid Fed rate hike bets」→ 「美联储将加息」，丢了「金价」）。
+    //   用户看到「美联储将加息」不知道说的是哪个品种 → 补上价格主语。
+    const subjHint = NF.priceSubjectHint(t);
+    if (subjHint && !/金价|银价|铜价|黄金|白银|铜/.test(fd.text)) {
+      return subjHint + "：" + fd.text;
+    }
+    return fd.text;
+  }
+  // ③ 可读译文兜底（专有说法译得准，比标签拼装具体）：如「美国对加拿大加征关税」
+  const gist = zhGist(t);
+  if (gist && NF.zhGistReadable(gist)) {
+    const g = gist.replace(/[，。；、：]+$/, "");
+    if (g.length >= 4) return g;
+  }
+  // ④ 末路兜底：从原文抽实体组成「谁说了什么」的句子（不再只拼标签）
+  //   【C22】原兜底是「美联储与美元相关动向公布」——仍然什么都没说。
+  //   这里先抽关键实体（人名/机构/动作短语/数字），至少让用户看出是谁在谈什么。
+  const ent = zhKeyEntities(t);
+  if (ent.length) {
+    const kw2 = (tags || []).filter((x) => x !== "走强" && x !== "走弱").slice(0, 1);
+    const topic = kw2.length ? kw2[0] : catOf(t) || "市场";
+    return ent.length >= 2 ? ent[0] + "谈" + ent[1] : ent[0] + "谈" + topic;
+  }
+  const kw = (tags || []).filter((x) => x !== "走强" && x !== "走弱").slice(0, 2);
+  const subj = kw.length ? kw.join("与") : catOf(t) || "市场";
+  return subj + "相关动向公布";
+}
+
+/**
+ * 【C22】从英文标题里抽关键实体（用于末路兜底的具体化）。
+ *   只抽「机构/人物 + 动作」这类硬信息，避免抽出一堆无意义的普通词。
+ */
+const ENT_SUBJ = [
+  [ /\b(?:fed|federal reserve|fomc|ecb|boe|boj|pboc)\b/i, "美联储" ],
+  [ /\btrump\b/i, "特朗普" ],
+  [ /\bbessent\b/i, "财长贝森特" ],
+  [ /\bwarsh\b/i, "美联储主席沃什" ],
+  [ /\bpowell\b/i, "美联储主席鲍威尔" ],
+  [ /\bgundlach\b/i, "债券投资人古德勒奇" ],
+  [ /\bgoldman sachs\b/i, "高盛" ],
+  [ /\bjpmorgan\b/i, "摩根大通" ],
+  [ /\bmorgan stanley\b/i, "摩根士丹利" ],
+  [ /\bimf\b/i, "国际货币基金组织" ],
+  [ /\bopec\b/i, "欧佩克" ],
+];
+const ENT_ACT = [
+  [ /rate pause|pause[sS]{0,20}rate/i, "美联储利率暂停" ],
+  [ /\bwhat are you waiting for\b/i, "质疑美联储按兵不动" ],
+  [ /\bwhy\b[\s\S]{0,24}(not|isn'?t)\b/i, "质疑美联储决策" ],
+  [ /\bwarns?\b/i, "发出警告" ],
+  [ /\bsees?\b/i, "预计" ],
+  [ /\bexpects?\b/i, "预计" ],
+  [ /\bforecast[s]?\b/i, "预测" ],
+  [ /\boutlook\b/i, "前景展望" ],
+  [ /\bstrategy\b/i, "策略调整" ],
+  [ /\bdecision\b/i, "政策决定" ],
+  [ /\bmeeting\b/i, "议息会议" ],
+  [ /\bhold[s]?\b[\s\S]{0,18}(steady|rates?|unchanged)/i, "维持利率不变" ],
+  [ /\btariff[s]?\b/i, "关税措施" ],
+  [ /\binflation\b/i, "通胀数据" ],
+  [ /\bprice[s]?\b/i, "价格走势" ],
+  [ /\bdemand\b/i, "需求变化" ],
+  [ /\bsupply\b/i, "供应变化" ],
+  [ /\bstocks?\b/i, "股市表现" ],
+  [ /\bmarket[s]?\b/i, "市场走势" ],
+  [ /\bmoney\b/i, "资金动向" ],
+  [ /\binvestors?\b/i, "投资者动向" ],
+];
+function zhKeyEntities(raw) {
+  const s = String(raw || "");
+  const out = [];
+  for (const [re, zh] of ENT_SUBJ) { if (re.test(s)) { out.push(zh); break; } }
+  for (const [re, zh] of ENT_ACT) { if (re.test(s)) { out.push(zh); break; } }
+  return out;
+}
+
+// 【C22】中文标题按语义边界截断：优先在标点处断开，避免出现半句话。
+//   规则：≤30 字原样保留；超长则取第一段完整短句（到第一个句末标点为止）；
+//   若首段仍超长，才按 30 字硬切（此时信息已尽，优于残句 + 省略号误导）。
+function trimCnTitle(cn, max) {
+  const lim = max || 36;
+  const s = String(cn || "");
+  if (s.length <= lim) return s;
+  // ① 真正的句末标点（。；）才作断点；感叹号/问号多用于「主体！内容」结构，不在此断。
+  //    断点需在 [6, lim] 内，且断点后不能紧跟另一个句末标点（那才是完整句尾）。
+  for (let i = 6; i <= Math.min(s.length, lim); i++) {
+    const ch = s[i];
+    if (ch === "。" || ch === "；") {
+      const nxt = s[i + 1] || "";
+      if (nxt !== "。" && nxt !== "；") return s.slice(0, i);
+    }
+  }
+  // ② 冒号结构：保留「主体：结论开头」，结论至少 6 字才截（否则只剩主体没信息）
+  const colon = s.indexOf("：") >= 0 ? s.indexOf("：") : s.indexOf(":");
+  if (colon >= 5 && colon < lim) {
+    const rest = s.slice(colon + 1);
+    if (rest.length >= 6) return s.slice(0, colon + 1) + rest.slice(0, Math.max(0, lim - colon - 1));
+    // 结论太短 → 整体保留到上限（虽然略超，但信息完整好过半句）
+    if (s.length <= lim + 6) return s;
+  }
+  // ③ 退到逗号/顿号处断开
+  let soft = -1;
+  for (let i = 6; i <= Math.min(s.length, lim); i++) {
+    if ("，,、".indexOf(s[i]) >= 0) { soft = i; break; }
+  }
+  if (soft >= 6) return s.slice(0, soft);
+  // ④ 硬切
+  return s.slice(0, lim);
 }
 var MONTHS = { january: "1", february: "2", march: "3", april: "4", may: "5", june: "6", july: "7", august: "8", september: "9", october: "10", november: "11", december: "12" };
 var MONTH_RE = "january|february|march|april|may|june|july|august|september|october|november|december";
@@ -1667,35 +1878,80 @@ function zhGist(raw) {
   return text;
 }
 // 英文源：先讲清「发生了什么」，再给对贵金属的结论；中文源：沿用原文概述
-function zhSummary(t, desc, tags, cat) {
+// 影响结论后缀：金属感知——铜用「对铜价影响」（工业金属逻辑），金银用「对贵金属影响」（货币属性逻辑）
+function impactSuffix(metal, fact, dir, alt) {
+  const aff = NF.zhImpact(fact, dir, metal === "copper" ? "copper" : "metal", alt);
+  return "。" + (metal === "copper" ? "对铜价影响" : "对贵金属影响") + "：" + aff;
+}
+// 英文源：先讲清「发生了什么」，再给对（贵）金属的结论；中文源：沿用原文概述
+// 【C22】metal 参数：标题与摘要的「影响结论」随品种切换（铜=工业金属，金银=货币属性），
+//   且标题已改为只讲事实，结论落在摘要里，二者对齐、不再不知所云。
+
+// 【C22】事实句单一真源：标题与摘要必须来自同一句话，否则「标题与概括对不上」。
+//   返回 { fact, from } —— from 用于摘要决定「事实句」与「补充正文」如何拼接。
+function zhFactOf(t, tags, cat) {
+  const cn = /[\u4e00-\u9fa5]/.test(t) ? NF.cleanCnHeadline(t).replace(/[，。；、：]+$/, "") : "";
+  if (cn.length >= 6) return { fact: trimCnTitle(cn), from: "cn" };
+  const fd = NF.zhFactDetail(t);
+  if (fd.text && !fd.generic) {
+    // 【C22】与 zhTitle 保持同源：英文源抽出的事实缺主语时补价格主语，
+    //   否则「标题=金价：美联储将加息」而「摘要首句=美联储将加息」→ 仍然对不上。
+    const subjHint = NF.priceSubjectHint(t);
+    const factText = (subjHint && !/金价|银价|铜价|黄金|白银|铜/.test(fd.text))
+      ? (subjHint + "：" + fd.text) : fd.text;
+    return { fact: factText, from: "rule" };
+  }
+  const gist = zhGist(t);
+  if (gist && NF.zhGistReadable(gist)) {
+    const g = gist.replace(/[，。；、：]+$/, "");
+    if (g.length >= 4) return { fact: g, from: "gist" };
+  }
+  const kw = (tags || []).filter((x) => x !== "走强" && x !== "走弱").slice(0, 2);
+  const subj = kw.length ? kw.join("与") : catOf(t) || "市场";
+  return { fact: subj + "相关动向公布", from: "fallback" };
+}
+// 【C22】摘要截断：不能硬切（110 字硬切会留下「…正确方向发展。鹰」这种半截词），
+//   优先在句末标点断开；找不到再退到逗号/顿号；最后才硬切并去掉尾部标点。
+function clipSummary(s, lim) {
+  const L = lim || 110;
+  const t = String(s || "");
+  if (t.length <= L) return t.replace(/[，、；\s]+$/, "");
+  const head = t.slice(0, L);
+  const m = head.match(/[。！？；][^。！？；]*$/);
+  if (m && m.index >= Math.floor(L * 0.55)) return head.slice(0, m.index + 1).replace(/[，、；\s]+$/, "");
+  const m2 = head.match(/[，、：][^，、：]*$/);
+  if (m2 && m2.index >= Math.floor(L * 0.55)) return head.slice(0, m2.index).replace(/[，、；\s]+$/, "");
+  return head.replace(/[，、；\s]+$/, "");
+}
+function zhSummary(t, desc, tags, cat, metal) {
   const dir = impactOf(t);
   const detail = stripText(desc || "");
-  // ① 中文原文（国内源）：直接用原文概述——这是用户最想要的信息（"维持联邦基金利率目标区间于3.75-4厘"）
-  if (/[\u4e00-\u9fa5]/.test(detail)) {
-    let d = detail;
+  // 【C22】摘要与标题同源：先取「事实句」（zhTitle 用的就是它），再补细节，最后挂影响结论。
+  //   这样摘要的第一句必然与标题一致 → 用户看到的是「标题 = 概括首句 = 结论前提」。
+  const fo = zhFactOf(t, tags, cat);
+  const fact = fo.fact;
+  // 中文源优先用原文概述（用户最想要的信息，如「维持联邦基金利率目标区间于3.75-4厘」）
+  if (fo.from === "cn" && /[\u4e00-\u9fa5]/.test(detail)) {
+    let d = detail.replace(/^【[^】]{0,24}】\s*/, "").replace(/^[：:，,。；、\s]+/, "");
     const head = NF.cleanCnHeadline(t).replace(/[：:，。；、]+$/, "");
     // 原文概述常常是「标题：正文」，去掉重复的标题部分
-    if (head && d.indexOf(head) === 0) d = d.slice(head.length).replace(/^[：:，,。、\s]+/, "");
-    if (d.length >= 8) return d.slice(0, 92).replace(/[，。；、]+$/, "") + "。对贵金属影响：" + NF.zhImpact(d, dir);
+    if (head && d.indexOf(head) === 0) d = d.slice(head.length).replace(/^[：:，,。、；\s]+/, "");
+    if (d.length >= 8) {
+      // 概述里已含事实句 → 直接用概述；否则「事实句 + 概述」
+      const body = d.indexOf(fact) >= 0 ? d : (fact + "。" + d);
+      return clipSummary(body, 110).replace(/[，。；、]+$/, "") + impactSuffix(metal, fact, dir, d);
+    }
   }
-  // ② 中文标题（国内源无摘要时）：标题本身就是事件概况
-  const cn = /[\u4e00-\u9fa5]/.test(t) ? NF.cleanCnHeadline(t).replace(/[，。；、]+$/, "") : "";
-  if (cn.length >= 8) return cn.slice(0, 92) + "。对贵金属影响：" + NF.zhImpact(cn, dir);
-  // ③ 英文标题择优：**具体事实**优先（用户要知道具体发生了什么）；
-  //    事实笼统时（如只说「关税政策有变化」）让位给**可读的词典译文**（专有说法译得准，
-  //    例如「本田警告 50% 加拿大汽车关税…」）；译文读不通才用笼统事实；最后回落通用模板。
-  const fd = NF.zhFactDetail(t);
-  const fact = fd.text;
-  const gist = zhGist(t);
-  const readable = !!(gist && NF.zhGistReadable(gist));
-  const specific = !!(fact && !fd.generic);
-  const usable = specific ? fact : (readable ? gist : (fact || gist || zhGistFallback(tags, cat)));
-  return usable + "。对贵金属影响：" + NF.zhImpact(specific ? fact : "", dir);
-}
-// 概况译不出来时（生僻标题）的兜底：至少告诉用户这条说的是哪个方向的事
-function zhGistFallback(tags, cat) {
-  const kw = ((tags || []).filter((x) => x !== "走强" && x !== "走弱")).slice(0, 3);
-  return "外媒报道，" + (kw.length ? kw.join("、") : cat || "国际财经") + "方面出现新动向";
+  // 英文源：事实句 + 原文细节（若有）+ 影响结论
+  if (fo.from === "rule" || fo.from === "gist" || fo.from === "fallback") {
+    let body = fact;
+    const extra = detail.replace(/\s+/g, " ").trim();
+    if (extra.length >= 12 && extra.indexOf(fact) < 0 && extra.length <= 70) {
+      body = fact + "。" + extra;
+    }
+    return clipSummary(body, 110).replace(/[，。；、]+$/, "") + impactSuffix(metal, fact, dir);
+  }
+  return clipSummary(fact, 110) + impactSuffix(metal, fact, dir);
 }
 // 概况译不出来时（生僻标题）的兜底：至少告诉用户这条说的是哪个方向的事
 function zhGistFallback(tags, cat) {
@@ -1712,8 +1968,33 @@ function jaccard(a, b) {
   for (const x of a) if (b.has(x)) inter++;
   return inter / (a.size + b.size - inter || 1);
 }
+// 【C21】来源权威度：通讯社/央行 > 一线财经 > 聚合门户；合并同事件时按此选权威出处
+// 【C22 用户要求】「尽量展示权威信息、事件」→ 把官方一手源（央行/统计局/SMM）提到最高档，
+//   使其在跨源聚类时优先成为「权威出处」，门户转述退居其次。
+var AUTHORITY_RANK = [
+  // —— 官方一手源（最高档）——
+  ["美联储官方", 6], ["欧洲央行官方", 6], ["国家统计局", 6], ["smm有色", 6],
+  ["federal reserve", 6], ["federalreserve", 6],
+  // —— 通讯社 ——
+  ["wsj", 5], ["wall street", 5],
+  ["reuters", 5], ["路透", 5],
+  ["bloomberg", 5], ["彭博", 5],
+  // —— 一线财经 ——
+  ["cnbc", 4], ["cnbc 商品", 4],
+  ["fed", 4], ["美联储", 4],
+  ["ft", 3], ["financial times", 3],
+  ["新华社", 4], ["人民", 3], ["央视", 3],
+  ["seekingalpha", 3], ["fxstreet", 3],
+  ["华尔街见闻", 3], ["金十", 3], ["财联社", 3], ["新浪", 3],
+  ["东方财富", 2],
+  ["自动归纳", 1],
+];
 function authorityOf(sourceName) {
-  return /WSJ/i.test(sourceName) ? 2 : 1; // WSJ 优先于 CNBC
+  var s = String(sourceName || "").toLowerCase();
+  for (var i = 0; i < AUTHORITY_RANK.length; i++) {
+    if (s.indexOf(AUTHORITY_RANK[i][0]) >= 0) return AUTHORITY_RANK[i][1];
+  }
+  return 2;
 }
 async function fetchNewsAll() {
   var out = [];
@@ -1736,6 +2017,7 @@ async function fetchNewsAll() {
     if (f.kind) {
       const items = f.kind === "eastmoney" ? NF.parseEastmoney(r.t)
         : f.kind === "wallstreetcn" ? NF.parseWallstreetcn(r.t)
+        : f.kind === "sina" ? NF.parseSina(r.t)
         : [];
       const fresh = items.filter((it) => NF.withinHours(it.date, 36));
       const latest = fresh.length ? fresh[0].date : null;
@@ -1749,11 +2031,28 @@ async function fetchNewsAll() {
       for (const it of fresh) {
         if (taken >= 20) break;
         if (!NF.cnRelevant(it.title, it.desc)) continue;   // 噪声门禁（地方债/逆回购/个股公告等）
+        // 【C22】市井门禁（与境外源同口径）：会议营销 / 消费轶事 / 个股行情 / 无关题材 → 不入库
+        if (NF.isMundane(it.title + " " + (it.desc || ""))) continue;
+        // 【C22】行情快照门禁：只播报「现在多少钱」的条目不是事件 → 不入库
+        if (NF.isQuoteOnly(it.title)) continue;
+        // 【C22】低质译文门禁：中文里残留整句英文 → 不入库
+        if (NF.isJunk(it.title)) continue;
+        // 【C22】纯外汇事件门禁：「印尼盾连跌六日」这类与金银铜定价无关 → 不入库
+        if (NF.isForexOnly(it.title + " " + (it.desc || ""))) continue;
         const metals = routeMetal(it.title + " " + it.desc);
         if (!metals.length) continue;
-        for (const m of metals) {
+        // 【C22】同境外分支：按金属差异化口径再验一次相关性
+        const relGold = NF.preciousRelevance(it.title + " " + (it.desc || ""));
+        const relCopper = NF.copperRelevance(it.title + " " + (it.desc || ""));
+        const metals2 = metals.filter((mm) => {
+          if (mm === "copper") return relCopper >= 2;
+          return relGold >= 1 || /黄金|金价|白银|银价|贵金属/.test(it.title);
+        });
+        if (!metals2.length) continue;
+        for (const m of metals2) {
           out.push({
             metal: m,
+            metalRelevance: m === "copper" ? relCopper : relGold,
             date: it.date,
             title: it.title,
             desc: it.desc,
@@ -1763,13 +2062,32 @@ async function fetchNewsAll() {
             url: it.link || "",
             pubTs: Date.parse(it.pub || "") || 0,
             cn: true,
+            // 【C22】中文快讯同样标记 auto：否则下一轮「携带转发自愈」会跳过它，
+            //   导致市井条目（如「Alphabet财报不及预期…」）永远清不掉。
+            auto: true,
           });
         }
         taken++;
       }
       continue;
     }
-    const items = parseRSS(r.t).slice(0, 30);
+    // 【C22】取条策略改为「按相关性排序后取前 N」：
+    //   原实现 slice(0, 30) 是按位置取，列表深处的铜供需高价值条目（如「第一量子产铜10.9万吨」）
+    //   永远取不到 → 铜列表只剩 2 条自动条目。这里改为：解析全部 → 算金属相关性 →
+    //   相关性高的排前 → 再取前 30。市井/无关条目相关性为 0，自然沉底。
+    const allItems = parseRSS(r.t);
+    const items = allItems
+      .map((it) => {
+        const txt = it.title + " " + (it.desc || "");
+        let rel = 0;
+        if (!NF.isMundane(txt)) {
+          rel = Math.max(NF.copperRelevance(txt), NF.preciousRelevance(txt));
+        }
+        return { it, rel };
+      })
+      .sort((a, b) => b.rel - a.rel)
+      .slice(0, 30)
+      .map((x) => x.it);
     // 源新鲜度：以最新一条 pubDate 计
     let latestTs = 0;
     for (const it of items) { const ts = Date.parse(it.pub || ""); if (!isNaN(ts) && ts > latestTs) latestTs = ts; }
@@ -1785,12 +2103,33 @@ async function fetchNewsAll() {
       continue;
     }
     for (const it of items) {
+      // 【C22】市井门禁（国内外源统一）：用户要求「只展示权威、正式的事件，市井信息不要」。
+      //   会议营销 / 消费轶事 / 个股行情 / 无关大宗 / 加密货币 / 股市播报 → 一律不入库。
+      if (NF.isMundane(it.title + " " + (it.desc || ""))) continue;
+      // 【C22】行情快照门禁：只播报「现在多少钱」的条目不是事件 → 不入库
+      if (NF.isQuoteOnly(it.title)) continue;
+      // 【C22】纯外汇事件门禁：交叉盘行情与金银铜定价无关 → 不入库
+      if (NF.isForexOnly(it.title + " " + (it.desc || ""))) continue;
       const metals = routeMetal(it.title);
       if (!metals.length) continue;
+      // 【C22】金属差异化相关性门禁：金银与铜各按自己的口径再验一次。
+      //   金银要的是「与货币定价相关」（央行/利率/美元/避险/贵金属自身）；
+      //   铜要的是「与铜的工业属性相关」（铜价/矿端/冶炼/加工费/库存/电网基建）。
+      //   routeMetal 已经把宏观与铜分开，这里再按品种卡一道，
+      //   防止「标题里带个 gold 字眼」或「提中国基建」就把无关条目塞进铜/金列表。
+      const relGold = NF.preciousRelevance(it.title + " " + (it.desc || ""));
+      const relCopper = NF.copperRelevance(it.title + " " + (it.desc || ""));
+      const metals2 = metals.filter((mm) => {
+        if (mm === "copper") return relCopper >= 2;      // 铜：必须真的在讲铜
+        return relGold >= 1 || /黄金|金价|白银|银价|贵金属|\bgold\b|\bsilver\b|comex|bullion/i.test(it.title);
+      });
+      if (!metals2.length) continue;
       const pubTs = Date.parse(it.pub || "");
-      for (const m of metals) {
+      for (const m of metals2) {
         out.push({
           metal: m,
+          // 【C22】落库相关性分（铜=工业口径 / 金银=货币口径），供前端标注与自测核查
+          metalRelevance: m === "copper" ? relCopper : relGold,
           date: dateFromUrl(it.link) || isoDate(it.pub),
           title: it.title.slice(0, 90),
           desc: it.desc,
@@ -1810,6 +2149,12 @@ function readSeed() {
   catch (e) { return null; }
 }
 // 合并：种子大事记（补中文标签）+ 已自动归纳的历史条目 + 本次新抓取（跨源合并去重）-> events.json
+// 判断事件来源是否为国内快讯源（新浪 / 东方财富 / 华尔街见闻）——这些源入库前需过 CN_HIT/CN_NOISE 门禁；
+// 境外源（CNBC/FXStreet/WSJ 等）在抓取阶段已按英文关键词过滤，且重译中文标题套用中文噪声词易误杀，故不在此复检。
+function isCnFeed(src) {
+  return /新浪|东方财富|华尔街见闻/.test(String(src || ""));
+}
+
 async function buildEvents() {
   const METALS_ARR = ["gold", "silver", "copper"];
   const base = readSeed() || { gold: [], silver: [], copper: [] };
@@ -1830,17 +2175,52 @@ async function buildEvents() {
   // 保留此前自动归纳过的中文条目（旧英文条目弃用，避免中英文重复）
   // 清洗：去掉历史条目摘要里的【分类】前缀（分类在事件卡片顶行已展示，避免重复）
   const stripCatPrefix = (s) => String(s || "").replace(/^【[^】]{1,12}】\s*/, "");
+  // 【C22】自愈路径的每日限流计数（key = 品种|日期）
+
   for (const m of METALS_ARR) {
     for (const e of (cur && cur[m]) || []) {
       seenAll.add(e.title);
-      if (e && e.auto && e.title && /[\u4e00-\u9fa5]/.test(e.title) && !seen[m].has(e.title)) {
-        if (e.summary) e.summary = stripCatPrefix(e.summary);
-        // 摘要升版（C12）：旧条目只有「对贵金属影响：…」一句结论，看不出发生了什么。
-        // 英文源条目入库时都存了 origTitle（英文原标题），据此离线重算出事件概况，
-        // 不必等下一次抓源——云端库里的存量条目也靠这条自愈到新版格式。
-        if (e.origTitle && e.summary && e.summary.indexOf("。对贵金属影响：") < 0) {
-          e.summary = zhSummary(e.origTitle, "", e.tags, e.category);
+      // 【C22】中文源（cn）无条件重校 —— 此前依赖 e.auto，中文快讯事件未打 auto 标记被整体跳过，
+      //   结果市井条目（如「Alphabet财报不及预期…」）跨轮续存、永远清不掉。
+      if (e && e.title && /[\u4e00-\u9fa5]/.test(e.title) && !seen[m].has(e.title) && (e.auto || e.cn || isCnFeed(e.source))) {
+        // 【C22 自愈】按新口径重校历史自动事件，避免旧脏数据跨轮续存、确保本次「整体优化」真正落地：
+        //   ① 标题用新版 zhTitle 重算（消除「通胀·加息：利多驱动」等不知所云标题）；
+        //   ② 摘要保留既有事实正文、只把结论后缀换成金属感知版本（铜=对铜价影响，金银=对贵金属影响）；
+        //   ③ 国内源事件重新过 CN_HIT/CN_NOISE 门禁——剔除市井/营销会议/个股业绩/基金流；
+        //   ④ 所有事件按新 routeMetal 重路由 metals——宏观事件不再污染铜（铜只留工业金属驱动）。
+        const newTitle = zhTitle(e.origTitle || e.title, e.tags);
+        // 【C22】市井剔除（统一口径，覆盖国内外源）：会议营销 / 消费轶事 / 个股行情 / 无关题材
+        if (NF.isMundane(newTitle + " " + String(e.summary || e.desc || ""))) {
+          continue; // 市井内容：本轮回炉，不再续存
         }
+        // 【C22】行情快照门禁（与新抓取同口径）：只播报「现在多少钱」的条目不是事件 → 回炉
+        if (NF.isQuoteOnly(newTitle)) continue;
+        // 【C22】纯外汇事件门禁：「印尼盾连跌六日」这类与金银铜定价无关 → 回炉
+        if (NF.isForexOnly(newTitle + " " + String(e.summary || e.desc || ""))) continue;
+        // 【C22】碎片译文门禁：译出「仍然，因美元企稳美联储前景」这种碎片 → 回炉
+        if (NF.isFragmentZh(newTitle)) continue;
+        // 【C22】低质译文门禁：中文里残留整句英文 → 回炉
+        if (NF.isJunk(newTitle)) continue;
+        if (isCnFeed(e.source) && !NF.cnRelevant(newTitle, e.summary || e.desc || "")) {
+          continue; // 国内源噪声门禁（地方债/逆回购/个股公告等）
+        }
+        e.title = newTitle;
+        // 保留事实正文，去掉旧结论后缀，再按金属感知重挂后缀（避免重复后缀、保留详情）
+        let base = String(e.summary || "").replace(/。对(贵金属|铜价)影响：.*$/, "").trim();
+        // 【C22】摘要与标题同源重算：标题改了就必须同步重算摘要，否则「标题与概括对不上」依旧。
+        //   保留原文细节（用户要的具体数字），但把「事实句 + 结论后缀」按新口径重挂。
+        const recomputed = zhSummary(e.origTitle || e.title, e.desc || "", e.tags, e.category, m)
+          .replace(/。对(贵金属|铜价)影响：.*$/, "").trim();
+        if (recomputed.length >= 8) base = recomputed;
+        if (base.length < 8) {
+          base = zhSummary(e.origTitle || e.title, e.desc || "", e.tags, e.category, m)
+            .replace(/。对(贵金属|铜价)影响：.*$/, "");
+        }
+        e.summary = clipSummary(base, 110) + impactSuffix(m, e.title, impactOf(e.title), base);
+        // 【C22】摘要层再查一次低质译文（正文里挂着英文原句的情况）
+        if (NF.isJunk(e.summary)) continue;
+        const rt = routeMetal(e.title + " " + (e.summary || ""));
+        e.metals = Array.from(new Set([...(rt.length ? rt : [m]), m]));
         // 【C19】存量条目的日期回填：历史条目是用旧口径（本地时区）算出来的日期，
         //   一旦入库就被原样沿用 → 日期会一直停在错误那天（实测 CNBC 文章被记成 URL 日期 +1 天，
         //   且随抓取时刻在 10-28/10-29 之间漂移）。这里按 URL 发布路径回填，跨机器确定。
@@ -1857,34 +2237,66 @@ async function buildEvents() {
   var news = newsRes.items || [];
   var newsSources = newsRes.sources || [];
   var fetchedAt = new Date().toISOString();
-  // 按品种分组 -> 跨源聚类（Jaccard≥0.5 视为同一事件）-> 保留权威出处
+  // 【C21】跨源聚类：改按「中文事实标题」聚类（语言无关），让同一事件的不同平台/语言报道
+  // 合并成一条（例：CNBC 英文 "Fed leaves rates unchanged" 与东方财富中文 "美联储维持利率不变"
+  // 经 zhTitle 都归一成 "美联储维持利率不变（不加息）" → 同簇合并）。同时显式保留权威出处。
   let added = 0;
   for (const m of METALS_ARR) {
     const items = news.filter((n) => n.metal === m);
     const clusters = [];
     for (const n of items) {
-      const toks = tokSet(n.title);
+      const tags = zhTags(n.title);
+      const zt = zhTitle(n.title, tags);                                  // 语言无关的中文事实标题
+      const fact = zt.includes("：") ? zt.slice(0, zt.lastIndexOf("：")) : zt; // 去方向后缀，同事实不同方向也合并
+      const key = normTitle(fact);                                        // 跨平台/跨语言同事件 → 同 key
       let hit = null;
-      for (const cl of clusters) { if (jaccard(toks, cl.toks) >= 0.5) { hit = cl; break; } }
-      if (hit) { hit.items.push(n); for (const x of toks) hit.toks.add(x); }
-      else clusters.push({ toks, items: [n] });
+      for (const cl of clusters) { if (cl.key === key) { hit = cl; break; } }
+      if (hit) hit.items.push(n);
+      else clusters.push({ key, items: [n] });
     }
+    // 【C22】簇内先按「权威度 + 金属相关性」降序排序：
+    //   每日限流时按此顺序择优保留（官方源/通讯社优先，其次相关性高的事件）。
     for (const cl of clusters) {
-      cl.items.sort((a, b) => authorityOf(b.source) - authorityOf(a.source));
-      const rep = cl.items[0]; // 权威出处（WSJ 优先）
+      cl.items.sort((a, b) => {
+        const d = authorityOf(b.source) - authorityOf(a.source);
+        if (d) return d;
+        const relB = b.metalRelevance || 0, relA = a.metalRelevance || 0;
+        if (relB !== relA) return relB - relA;
+        return (b.pubTs || 0) - (a.pubTs || 0);
+      });
+    }
+    // 【C22】每日限流：每个品种每天最多 PER_DAY_LIMIT 条。
+    //   原因：当天快讯可达 20+ 条会把首屏灌满，且当天事件的 5 个交易日事件窗未走完
+    //   → 相关性全显示「—」。限流后首屏能覆盖到前几天，用户能看到可解释的指数。
+    //   种子（历史大事记）不参与限流。
+    const dayLimitHit = new Set();
+    for (const cl of clusters) {
+      // 权威出处优先：按来源权威度排序，最高者为权威出处
+      const rep = cl.items[0];
       const tags = zhTags(rep.title);
       const cat = catOf(rep.title);
       const title = zhTitle(rep.title, tags);
       if (seen[m].has(title) || seenAll.has(title)) continue;
+      // 【C22】无信息量兜底标题（「黄金相关动向公布」等于没说）→ 丢弃
+      if (/相关动向公布|相关动向|情况公布|消息公布/.test(title)) continue;
+      // 【C22】低质译文门禁：中文里残留整句英文（翻译失败/拼接错乱）→ 丢弃，且不占每日配额
+      const summary = zhSummary(rep.title, rep.desc, tags, cat, m);
+      if (NF.isJunk(title) || NF.isJunk(summary)) continue;
       seen[m].add(title);
       seenAll.add(title);
+      // 来源合并：权威出处排第一，其余按权威度排序去重（保留全部出处）
+      const byAuth = cl.items.slice().sort((a, b) => authorityOf(b.source) - authorityOf(a.source));
+      const srcList = [];
+      byAuth.forEach((it) => { if (srcList.indexOf(it.source) < 0) srcList.push(it.source); });
       res[m].push({
         date: rep.date,
         title,
         impact: impactOf(rep.title),
         category: cat,
-        source: "自动归纳 · " + Array.from(new Set(cl.items.map((i) => i.source))).join(" / "),
-        summary: zhSummary(rep.title, rep.desc, tags, cat),
+        source: "自动归纳 · " + srcList.join(" / "),      // 含全部来源，权威出处居首
+        authoritativeSource: rep.source,                 // 【C21】显式权威出处
+        sources: Array.from(new Set(cl.items.map((i) => i.source))), // 全部来源（结构化，便于前端标注）
+        summary: summary,
         url: rep.url || "",
         origTitle: rep.title,
         tags,
@@ -1914,7 +2326,27 @@ async function buildEvents() {
   }
 
   for (const m of METALS_ARR) {
-    res[m].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    res[m].sort((a, b) => {
+      if (a.date < b.date) return 1;
+      if (a.date > b.date) return -1;
+      // 同日：入库时间新的在前（本轮新抓取的事件不会被上轮遗留条目挤掉）
+      const fa = a.fetchedAt || "", fb = b.fetchedAt || "";
+      if (fa !== fb) return fa < fb ? 1 : -1;
+      return 0;
+    });
+    // 【C22】每日限流（统一口径，一次性生效）：
+    //   每个品种每天最多 PER_DAY_LIMIT 条**自动事件**——当天快讯可达 20+ 条会把首屏灌满，
+    //   且当天事件的 5 个交易日事件窗未走完 → 相关性全显示「—」。限流后首屏能覆盖到前几天。
+    //   种子/历史大事记（auto=false）不参与限流，仍全部保留。
+    const perDay = new Map();
+    res[m] = res[m].filter((e) => {
+      if (!e.auto) return true;
+      const k = e.date || "";
+      const n = perDay.get(k) || 0;
+      if (n >= PER_DAY_LIMIT) return false;
+      perDay.set(k, n + 1);
+      return true;
+    });
     res[m] = res[m].slice(0, 80);
   }
   // 事件数据元信息（独立文件，与价格 meta.json 分开：分数据展示各自更新时间）

@@ -554,6 +554,11 @@
       return a.date < b.date ? 1 : a.date > b.date ? -1 : 0;
     });
     if (state.eventCat !== "all") list = list.filter(function (e) { return e.category === state.eventCat; });
+    // 【C22】同日「相关性可计算」优先：当天新事件的事件窗（5 个交易日）未走完 → 相关性不可算；
+    //   当天条目一多，首屏会全是「相关性 —」。日期倒序不变，仅同日内部把可计算的排前面（与小程序端同口径）。
+    if (window.EDedupe && window.EDedupe.sortEventsForDisplay) {
+      list = window.EDedupe.sortEventsForDisplay(list, function (e) { return !!corrFor(e); });
+    }
     var total = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
     if (state.eventPage > total) state.eventPage = total;
     var startIdx = (state.eventPage - 1) * PAGE_SIZE;

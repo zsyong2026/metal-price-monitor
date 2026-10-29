@@ -154,11 +154,14 @@
   var AUTHORITY = [
     ["wsj", 5], ["wall street", 5],
     ["reuters", 5], ["路透", 5],
-    ["cnbc", 4],
-    ["bloomberg", 4], ["彭博", 4],
+    ["bloomberg", 5], ["彭博", 5],
+    ["cnbc", 4], ["cnbc 商品", 4],
     ["fed", 4], ["美联储", 4],
     ["ft", 3], ["financial times", 3],
     ["新华社", 4], ["人民", 3], ["央视", 3],
+    ["seekingalpha", 3], ["fxstreet", 3],
+    ["华尔街见闻", 3], ["金十", 3], ["财联社", 3], ["新浪", 3],
+    ["东方财富", 2],
     ["自动归纳", 1],
   ];
   function authorityOf(src) {
@@ -408,6 +411,41 @@
     return res;
   }
 
+
+  /**
+   * 【C22】事件展示排序：日期倒序 + 同日「相关性可计算」优先。
+   *   当天新事件的事件窗（5 个交易日）未走完 → corr 不可算；
+   *   若不加这一层，当天条目一多，首屏全是「相关性 —」，用户看不到任何可解释的指数。
+   *   同日内部调整不改变「最新优先」的语义，跨天顺序完全不变。
+   * @param {Array} items 事件数组
+   * @param {Function} isComputable (e) => boolean，该条事件的相关性是否可计算
+   * @returns {Array} 排好序的新数组（不修改入参）
+   */
+  function sortEventsForDisplay(items, isComputable) {
+    var arr = (items || []).slice();
+    var f = typeof isComputable === "function" ? isComputable : function () { return false; };
+    var flag = new Map();
+    arr.forEach(function (e, i) { flag.set(i, !!f(e)); });
+    // 稳定排序：先按日期倒序，再按「可计算」降序（Array.prototype.sort 在 V8/JSCore 均为稳定排序）
+    arr.sort(function (a, b) {
+      if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+      return 0;
+    });
+    // 稳定排序后重排同日分组
+    var out = [];
+    var i2 = 0;
+    while (i2 < arr.length) {
+      var j2 = i2;
+      while (j2 + 1 < arr.length && arr[j2 + 1].date === arr[i2].date) j2++;
+      var grp = arr.slice(i2, j2 + 1);
+      var can = grp.filter(function (e) { return !!f(e); });
+      var cant = grp.filter(function (e) { return !f(e); });
+      out = out.concat(can).concat(cant);
+      i2 = j2 + 1;
+    }
+    return out;
+  }
+
   /** 全量合并（跨品种已去重，可直接用于「全部」视图） */
   function eventsAll(map, opt) {
     var res = [];
@@ -447,6 +485,7 @@
     findDuplicates: findDuplicates,
     eventsFor: eventsFor,
     eventsAll: eventsAll,
+    sortEventsForDisplay: sortEventsForDisplay,
     cleanEvent: cleanEvent,
   };
 });

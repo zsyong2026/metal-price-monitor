@@ -46,6 +46,70 @@
 
   // 规则表：按顺序匹配，命中即用（第一条命中即返回）
   var RULES = [
+    // —— C22 补·末路兜底补漏（这三条曾落到「XX相关动向公布」的含糊标题）——
+    { re: /five key takeaways[\s\S]{0,80}(fed|rate decision)[\s\S]{0,60}(news conference|press conference)/i,
+      zh: "美联储议息结果与沃什记者会要点解读" },
+    { re: /where to put your money/i, zh: "美联储利率走向下的资产配置讨论" },
+    { re: /tokyo cpi[\s\S]{0,60}boj|boj decision[\s\S]{0,80}(yen|central bank week)/i,
+      zh: "东京CPI与日本央行议息落定" },
+    { re: /fed meeting keeps? dollar steady|dollar[\s\S]{0,40}fed meeting[\s\S]{0,30}steady/i,
+      zh: "美联储议息会议后美元维持平稳" },
+    { re: /gundlach[\s\S]{0,60}(rate pause|fed)/i,
+      zh: "债券投资人古德勒奇质疑美联储按兵不动" },
+    // —— C22 补·权威官方源标题具体化（官方源标题极简，不具体化就是「一句废话」）——
+    // 美联储官方 RSS：FOMC 声明 / 会议纪要 / 经济预测（SEP）—— 金银定价最权威的一手来源
+    { re: /federal reserve issues fomc statement/i, zh: "美联储发布FOMC利率决议声明" },
+    { re: /minutes of the federal open market committee/i, zh: "美联储公布FOMC会议纪要" },
+    { re: /minutes of the board'?s discount rate meetings/i, zh: "美联储公布贴现率会议纪要" },
+    { re: /federal open market committee release economic projections/i, zh: "美联储发布经济预测摘要与点阵图" },
+    { re: /federal reserve issues .*statement/i, zh: "美联储发布政策声明" },
+    // 欧洲央行官方 RSS：货币政策决议 / 调查数据
+    { re: /monetary policy decisions/i, zh: "欧洲央行公布货币政策决议" },
+    { re: /euro area bank lending survey/i, zh: "欧洲央行发布欧元区银行信贷调查" },
+    { re: /access to finance of enterprises/i, zh: "欧洲央行发布企业融资条件调查" },
+    { re: /consumer expectations survey/i, zh: "欧洲央行发布消费者预期调查" },
+    // —— C22 补·铜一手行情（SMM/交易所口径）——
+    { re: /矿端[^，。]{0,12}沪铜|沪铜[^，。]{0,10}(偏强|偏弱|震荡|上涨|下跌|涨|跌)|伦铜[^，。]{0,10}(涨|跌|收涨|收跌)/, zh: "铜价行情：矿端与现货博弈" },
+    { re: /沪铜|伦铜|LME铜/,
+      zh: function (m) { return "铜价与库存动态更新"; } },
+    // —— C22 补·高优先（必须排在通用规则之前，否则会被下方泛化规则抢走）——
+    // RBA（澳洲联储）专属：澳洲 CPI / 加息预期 ≠ 美国通胀，必须先于「hot CPI → 美国CPI」判定
+    { re: /\bRBA\b|reserve bank of australia|澳洲联储|澳大利亚央行/i, zh: "澳洲央行加息预期升温" },
+    // IMF 警告：全球流动性风险（比下方泛化的「美债收益率飙升」更准确）
+    { re: /\bIMF\b[\s\S]{0,90}(bond yields?|disorderly|spike|surge|warn)/i, zh: "IMF警告债券收益率可能无序飙升" },
+    // FOMC 议息会议频次调整（Fed meeting recap / fewer rate-setting meetings）
+    { re: /fewer rate-setting meetings|host fewer/i, zh: "美联储拟减少议息会议次数" },
+    // 财长贝森特定调（条件句，不能直接说成「美联储将加息」）
+    { re: /\bbessent\b[\s\S]{0,90}hike/i, zh: "财长贝森特谈美联储再加息风险" },
+    // 特朗普谈关税用途（政治评论，具体化才不至于沦为「关税政策变化」）
+    { re: /trump[\s\S]{0,110}tariffs?[\s\S]{0,70}(grift|tool)/i, zh: "特朗普称关税被用作牟利工具" },
+    // 通胀担忧 + 关税退税调整
+    { re: /four reasons[\s\S]{0,140}inflation|tariff refunds?/i, zh: "通胀担忧升温，关税退税政策面临调整" },
+    // PPI 偏热：比「美国PPI升温」多一层「抗通胀尚未结束」的判断
+    { re: /\bhot\s*PPI\b|\bPPI\b[\s\S]{0,40}hot/i, zh: "美国PPI超预期，美联储抗通胀尚未结束" },
+    // COMEX 金银同时收涨 / 收跌（必须排在下方单金属 settle 规则之前）
+    { re: /comex[\s\S]{0,30}(gold|黄金)[\s\S]{0,30}silver[\s\S]{0,45}settle[sd]?\s+higher/i, zh: "COMEX黄金、白银集体收涨" },
+    { re: /comex[\s\S]{0,30}(gold|黄金)[\s\S]{0,30}silver[\s\S]{0,45}settle[sd]?\s+lower/i, zh: "COMEX黄金、白银集体收跌" },
+    // 现货银价关键位（XAG/USD）
+    { re: /XAG\/USD[\s\S]{0,40}(slips|falls|drops|below|above)/i, zh: "现货银价跌破关键位" },
+    { re: /\bsilver\b[\s\S]{0,25}\$([\d,]+(?:\.\d+)?)/i, zh: function (m) { return "银价报 " + m[1] + " 美元/盎司"; } },
+    // 加息在即但本周不动（CNBC 调查类）
+    { re: /rate hikes? are coming, but not this week/i, zh: "美联储加息在即但本周不会加息" },
+    // —— C22 补：英文标题「具体事实」抽取（覆盖此前只能拼标签的硬骨头，消除「通胀·加息：利多驱动」类不知所云标题）——
+    { re: /\bgold\b[\s\S]{0,25}?(settles?|settled|closes?)\s+(lower|down|under)/i, zh: "金价下跌" },
+    { re: /\bgold\b[\s\S]{0,25}?(settles?|settled|closes?)\s+(higher|up|above)/i, zh: "金价上涨" },
+    { re: /\bsilver\b[\s\S]{0,25}?(settles?|settled|closes?)\s+(lower|down|under)/i, zh: "银价下跌" },
+    { re: /\bsilver\b[\s\S]{0,25}?(settles?|settled|closes?)\s+(higher|up|above)/i, zh: "银价上涨" },
+    { re: /\bhot\b[\s\S]{0,12}(cpi|ppi)\b/i, zh: function (m) { return "美国" + (/cpi/i.test(m[1]) ? "CPI" : "PPI") + "升温"; } },
+    { re: /(cpi|ppi)\b[\s\S]{0,30}(hot|heats?|(?:re)?accelerates?|surge|jumps?|rises?)/i, zh: function (m) { return "美国" + (/cpi/i.test(m[1]) ? "CPI" : "PPI") + "升温"; } },
+    { re: /rate hikes? are coming/i, zh: "美联储加息在即" },
+    // 【C22 修复方向反转】原规则 /\bfed\b[\s\S]{0,45}(hikes?|will hike|to hike)/i 会把
+    //   「Fed meeting live updates: No hike expected」（市场预计**不**加息）误判成「美联储将加息」，
+    //   方向完全说反。改为排除否定语境：no hike / not hike / hike is not / without a hike / hike odds。
+    { re: /\bfed\b[\s\S]{0,45}(hikes?|will hike|to hike)/i, zh: "美联储将加息",
+      not: /\bno\s+(rate\s+)?hike|\bnot\s+(a\s+)?hike|hike\s+is\s+not|hikes?\s+is\s+not|without\s+a\s+hike|hike\s+odds|\bno\s+hikes\b|不加息|没有加息/i },
+    { re: /fed'?s (work|job) is not done/i, zh: "美联储抗通胀任务未竟" },
+    { re: /bond yields?\b[\s\S]{0,30}(spike|surge|jump|rise|climb|soar)/i, zh: "美债收益率飙升" },
     // —— 美联储利率决定（用户最关心的「不加息/加息/降息」）——
     { re: /\bfed\b[\s\S]{0,50}?(leaves?|holds?|kept|keeps?)\s+(its\s+)?rates?\s+(unchanged|steady|on hold|put on hold)/i,
       zh: "美联储维持利率不变（不加息）" },
@@ -128,6 +192,9 @@
     for (var i = 0; i < RULES.length; i++) {
       var m = t.match(RULES[i].re);
       if (m) {
+        // 【C22】否定语境护栏：规则可带 not 正则，命中否定表述时本规则跳过（继续往下找更准确的规则）。
+        //   例：「Fed ... No hike expected」不应被「美联储将加息」规则抢走。
+        if (RULES[i].not && RULES[i].not.test(t)) continue;
         var v = typeof RULES[i].zh === "function" ? RULES[i].zh(m) : RULES[i].zh;
         if (v && /[\u4e00-\u9fa5]/.test(v)) return { text: v, generic: !!RULES[i].gen };
       }
@@ -154,34 +221,401 @@
     return true;
   }
 
+  /* ================= D. 金属差异化相关性（铜 vs 金银） ================= */
+
+  /**
+   * 【C22 用户要求】金银铜属性不同、使用场景不同，抓取与相关性计算必须有差异。
+   *   · 金银 = 货币属性：避险 / 实际利率 / 美元 / 央行 / 通胀 → 宏观事件归金银
+   *   · 铜   = 工业金属：中国基建 / 制造业 / 供需 / 矿端供应 → 宏观事件不归铜
+   * 铜专属关键词命中铜自身行情时，铜才独立成条；否则铜只收「明确提到铜」的条目。
+   */
+  var COPPER_CORE = /铜价|沪铜|伦铜|LME铜|LME 铜|COMEX铜|COMEX 铜|铜主力|铜期货|精铜|阴极铜|电解铜|废铜|铜精矿|铜矿|铜冶炼|铜加工|铜杆|铜管|铜箔|铜棒|铜库存|铜需求|铜消费|铜供应|铜产能|铜产量|铜加工费|铜期权|\bcopper\b|\blme copper\b|comex copper/;
+  // 铜的「工业属性」信号（用于给铜条目的影响结论与相关性加权，不用于把宏观事件拉进铜）
+  var COPPER_INDUSTRY = /电网|电缆|基建|制造业|工业需求|新能源车|光伏|风电|数据中心|房地产|建筑|汽车产量|冶炼|精矿|加工费|TC\/RC|库存|矿端|减产|罢工|产能|开工率|出口|进口|中国|宏观|刺激/;
+
+  /**
+   * 该文本是否明确在讲铜（铜自身行情 / 铜产业）
+   * 【C22 强化】铜的「一手行情语言」必须能识别，否则铜列表只能靠宏观凑数：
+   *   沪铜/伦铜/LME铜/COMEX铜/铜价/A股沪铜主力/铜主力合约 —— 这些是铜行情的固定表述。
+   */
+  function copperRelevant(t) {
+    var s = String(t || "");
+    if (COPPER_CORE.test(s)) return true;
+    // 铜行情固定表述（沪铜主力 / 伦铜 / LME 铜 / COMEX 铜 / 铜价）
+    // 【C22】不收录裸「铜」单字 —— 「宝祺铜业」「铜缆」「铜棒」这类企业名/品类名
+    //   会把无关条目（展会邀约、个股预中标、报价流水）误判成铜事件。
+    //   只有「铜 + 供需/行情语义」组合才算真正在讲铜。
+    if (/沪铜|伦铜|LME铜|LME 铜|COMEX铜|COMEX 铜|铜价|铜主力|铜期货/.test(s)) return true;
+    if (/铜/.test(s) && /矿|冶炼|精矿|库存|加工费|产能|产量|供应|需求|消费|减产|罢工|价格|涨|跌|升|降|供需|开工|吨|指引|财报|季报|半年报/.test(s)) return true;
+    return false;
+  }
+
+  /**
+   * 铜的事件相关性评分：铜自身行情 / 铜产业供需为强信号；
+   * 纯宏观（美联储 / 美元 / 通胀）不计入 —— 这正是「铜的信息展示到金里」的判定依据。
+   * 【C22 强化】新增「铜一手行情」识别：沪铜/伦铜/LME铜/铜价 → 强信号，
+   *   否则像「矿端干扰较多 沪铜偏强运行」这种铜的核心行情评论会被漏判。
+   * @returns {number} 0 = 与铜无关
+   */
+  function copperRelevance(t) {
+    var s = String(t || "");
+    if (!copperRelevant(s)) return 0;
+    var score = 2;
+    if (/铜价|沪铜|伦铜|LME铜|LME 铜|COMEX铜|COMEX 铜|\bcopper\b|comex copper|精铜|阴极铜|电解铜|铜主力/i.test(s)) score += 2;   // 铜价行情
+    if (COPPER_INDUSTRY.test(s)) score += 1;                                    // 铜产业/供需
+    if (/产量|库存|加工费|开工率|减产|罢工|供应|需求|产能|矿端|冶炼|精矿/i.test(s)) score += 1; // 供需变量
+    return score;
+  }
+
+  /**
+   * 金银的货币属性相关性评分：宏观（央行/利率/美元/通胀/避险/地缘）+ 贵金属自身。
+   * @returns {number} 0 = 与金银无关
+   */
+  function preciousRelevance(t) {
+    var s = String(t || "");
+    var score = 0;
+    if (/美联储|联储|议息|利率决议|利率决定|加息|降息|不加息|按兵不动|央行|货币政策|\bfed\b|fomc|central bank|rate hike|rate cut/i.test(s)) score += 2;
+    if (/通胀|inflation|\bcpi\b|\bppi\b|\bpce\b|非农|失业率|就业|\bgdp\b|pmi/i.test(s)) score += 2;
+    if (/美元|\bdollar\b|美债|收益率|实际利率|treasury|yield/i.test(s)) score += 1;
+    if (/避险|地缘|冲突|战争|制裁|避险需求|safe haven|geopolit/i.test(s)) score += 1;
+    if (/黄金|金价|白银|银价|贵金属|\bgold\b|\bsilver\b|comex|bullion|precious metal/i.test(s)) score += 2;
+    if (/关税|tariff|贸易战|trade war/i.test(s)) score += 1;
+    return score;
+  }
+
+  /**
+   * 【C22 用户要求】市井信息一律不要：只要「不产生金银铜定价变化」就属噪音。
+   * 命中即视为市井 → 不入库（含资讯体裁噪音：会议/展会/人物轶事/生活消费/无关行业行情）。
+   */
+  var MUNDANE = /大会|论坛|峰会|研讨会|博览会|晨会|策略会|发布会|发布会|年会|沙龙|路演|招商|签约|揭牌|剪彩|开业|奠基|落成|投产仪式|表彰|颁奖|履新|出任|任职|离任|人事变动|女子|男子|小伙|大爷|大妈|情侣|婚礼|结婚|离婚|手镯|金店|金饰|项链|珠宝|钻戒|黄金饰品|首饰|买金|打金|金价下跌.*买|银饰|典当|回收|直播|带货|销量|门店|加盟|优惠券|促销|旅游|景区|票价|电影|票房|球队|球员|比赛|夺冠|综艺|明星|演唱会|生肖|彩票|星座|养生|减肥|美食|菜谱|天气|气温|降雨|台风|地震|车祸|坠机|爆炸事故|火灾|讣告|遇难|车祸|彩票|展会邀约|邀您共聚|诚邀|参展|预中标|中标公告|招聘|专利|论文|课程|讲座|直播预告|【SMM价格】|价格快讯|每日报价|归母净利润|扣非净利润|每股收益|营业收入|业绩快报|业绩预告|forex today|here is what you need to know|what you need to know|daily recap|市场综述|今日综述|每日综述/;
+  // 与金属定价完全无关的行情题材（个股/其它大宗/加密货币/汇率中间价/股市播报）
+  // 【C22 补】SMM 等有色资讯站会发「XX企业Q3净利大增」「XX资源产量增X%」这类**其它有色品种**的业绩/产量快讯，
+  //   与铜定价无关（钼/钴/锌/镍/铝）→ 一律剔除，否则铜列表会被非铜有色信息占满。
+  var OFF_TOPIC = /个股|股票|股价|涨停|跌停|龙虎榜|大宗商品期货|主力合约|沪锡|沪镍|沪铅|碳酸锂|热轧卷|螺纹钢|铁矿石期货|棕榈油|豆粕|白糖期货|生猪期货|尿素|红枣|鸡蛋|苹果期货|原油期货|布伦特|WTI|布油|咖啡|可可|白糖|棉花|人民币中间价|在岸人民币|离岸人民币|数字人民币|比特币|以太坊|区块链|加密货币|稳定币|元宇宙|AI股|科技股|芯片股|光模块|机器人概念|钼价|钼矿|钼产量|钴价|钴矿|钴产量|镍价|镍矿|锌价|锌矿|锌产量|锡价|锡矿|伦铅|伦锌|伦镍|伦锡|伦铝|铝价|铝锭|电解铝|铝合金|铅价|铅矿|稀土|锂矿|碳酸锂价|硅料|多晶硅|钨价|钨矿|dividend|\bearnings\b|analyst|price target|buyback|shareholder|\bacquisition\b|\bmerger\b|\bstocks?\b|\bIPO\b/;
+
+  /**
+   * 是否为「市井 / 与金属定价无关」的条目（用户要求：只展示权威正式事件）。
+   * @returns {boolean} true = 市井或无关，应丢弃
+   */
+  // 【C22】英文每日综述栏目（大小写不敏感）：FXStreet「Forex Today: …」、
+  //   「Here is what you need to know…」这类是每日综述/预告，不是事件 → 剔除。
+  var MUNDANE_EN = /forex today|here is what you need to know|what you need to know|daily recap|market wrap|economic calendar|what to watch/i;
+  // 【C22】无信息量标题（兜底拼装）：「黄金相关动向公布」等于没说 → 不入库
+  var VAGUE_TITLE = /相关动向公布|相关动向|情况公布|消息公布/;
+  function isMundane(t) {
+    var s = String(t || "");
+    if (MUNDANE.test(s)) return true;
+    if (MUNDANE_EN.test(s)) return true;
+    if (OFF_TOPIC.test(s)) return true;
+    if (VAGUE_TITLE.test(s)) return true;
+    // 【C22】标题党：一句里两个以上感叹号（「沃什最新表态！美联储，重大变革！美元指数，瞬间跳水！」）
+    //   —— 这类是资讯站引流标题，不是权威正式事件 → 不入库。
+    if ((s.match(/！/g) || []).length >= 2) return true;
+    return false;
+  }
+
+  /* ================= E. 行情快照 vs 事件（用户要「事件」，不要「今天多少钱」） ================= */
+
+  /**
+   * 【C22】纯行情快照门禁：只播报「现在多少钱/涨跌多少」，没有「发生了什么」，
+   *   不是用户要的「权威事件」。典型：
+   *   「今日黄金：跌至4030美元附近」「快讯：现货黄金跌超1%，现报4025.15美元/盎司」
+   *   「金价下跌」「现货黄金下跌1% 现货白银跌超2%」「India Gold price today: Gold falls」
+   *   → 这些条目既拉低信息密度，也会把当天列表灌满、挤掉真正的事件。
+   *   判定口径：标题主体是「今日/快讯/盘中/收评 + 价格」，且**不含任何事件性要素**
+   *   （决策/决议/政策/产量/罢工/数据公布/机构表态/关税/冲突…）。
+   */
+  var QUOTE_ONLY = /^(今日|快讯|现货|盘中|早盘|午盘|尾盘|收评|日评|盘面|行情|价格|报价|期金|期银|沪金|沪银|沪铜|伦铜|金价|银价|铜价|黄金|白银|铜)/;
+  // 【C22 英文源】英文标题的「纯报价页」前缀：Gold/Silver/Copper price today、price update 等
+  var QUOTE_ONLY_EN = /^(gold|silver|copper|spot gold|spot silver|gold price|silver price|copper price|india gold price|price update|price forecast)/i;
+  var EVENT_SIGNAL = /决议|决定|宣布|发布|通过|否决|上调|下调|加息|降息|不加息|按兵不动|议息|政策|制裁|关税|协议|签署|产量|减产|罢工|停产|复产|库存|数据|公布|同比|环比|增长|下降|上升|回落|走高|走低|跌破|突破|触及|创.*新高|创.*新低|财报|业绩|指引|预测|预计|预期|讲话|表态|回应|声明|记者会|听证|会议|访华|访美|冲突|战争|袭击|制裁|疫情|选举|投票|辞职|任命|调查|起诉|罚款|收购|并购|IPO|财报季|开局|收官|收盘|开盘|刷新|创纪录|领涨|领跌|跳水|暴涨|暴跌|飙升|重挫|反弹|回升|承压|支撑|压力|新高|新低/;
+  function isQuoteOnly(t) {
+    var s = String(t || "").replace(/^[\s【\[（(]+/, "");
+    if (QUOTE_ONLY_EN.test(s)) {
+      // 英文「纯报价页」：Gold price today / Silver price update …
+      //   含观点/预测的（forecast / outlook / analysts / expect）→ 是分析事件，保留
+      if (/\b(forecast|outlook|analysts?|expect|predict|target|why|what|how|view|views|opinion|analysis|guide|strategy)\b/i.test(s)) {
+        return false;
+      }
+      // 否则若同时出现事件性要素（联储决议/通胀/关税/产量…）→ 保留
+      if (!/\b(fed|fomc|rate|decision|policy|tariff|inflation|cpi|ppi|war|conflict|sanction|central bank|production|output|strike|announce|report|data release|hike|cut)\b/i.test(s)) {
+        return true;
+      }
+      return false;
+    }
+    if (!QUOTE_ONLY.test(s)) return false;
+    // 【C22 英文原文】英文源的「今日金价」类报价页也要判：
+    //   "India Gold price today: Gold falls, according to FXStreet data" → 纯报价，不是事件。
+    //   判据：含 price today / price today / according to <source> data，且无事件性动词。
+    if (/\b(price|prices)\s+today\b|\btoday'?s\s+(gold|silver|copper)\s+price\b|according to .* data\b/i.test(s)) {
+      if (!/\b(fed|fomc|rate|decision|policy|tariff|inflation|cpi|ppi|war|conflict|sanction|central bank|production|output|strike|sanction|announce|report|data release)\b/i.test(s)) {
+        return true;
+      }
+    }
+    // 【C22】只看**首段**（冒号前）是否纯报价：
+    //   「今日黄金：跌至4030美元附近，市场等待美国通胀数据」首段是纯报价（后续的「通胀数据」
+    //   是背景，不是这件事本身）→ 判为快照。
+    //   「金价突破4000美元后高位震荡」无冒号 → 整段看，有「突破/震荡」等事件性词 → 保留。
+    var head = s.split(/[：:，,]/)[0];
+    if (EVENT_SIGNAL.test(head)) return false;
+    // 无冒号时，整段都要有事件性词才保留
+    if (head === s && EVENT_SIGNAL.test(s)) return false;
+    return true;
+  }
+
+  /**
+   * 【C22】英文标题的「主体」是否丢失：原文说的是金/银/铜价，
+   *   但规则化抽取只给出了「美联储将加息」这类**驱动因素**、丢了价格主体 →
+   *   用户看到「美联储将加息」不知道说的是金还是银。修复方式：给这类抽取加主语。
+   *   返回应补的主语（"" = 无需补）。
+   */
+  function priceSubjectHint(raw) {
+    var s = String(raw || "");
+    if (/\bgold\b|gold price|gold prices|bullion|金价|黄金/i.test(s)) return "金价";
+    if (/\bsilver\b|silver price|银价|白银/i.test(s)) return "银价";
+    if (/\bcopper\b|copper price|铜价|沪铜|伦铜/i.test(s)) return "铜价";
+    return "";
+  }
+
+  /* ================= F. 纯外汇 / 碎片译文 门禁 ================= */
+
+  /**
+   * 【C22】纯外汇事件门禁：「印尼盾连跌六日后迎来反弹」「纽元跌至…」
+   *   这类是交叉盘行情，与金银铜定价没有直接关系 → 不入库。
+   *   但若同时提到黄金/白银/铜/美元/美联储，则仍与贵金属定价相关 → 保留。
+   */
+  var FX_ONLY = /印尼盾|里拉|比索|卢比|卢布|兹罗提|福林|克朗|瑞郎|法郎|林吉特|盾|拉美货币|泰铢|新元|澳元|纽元|加元|日元|欧元|英镑|韩元|美元指数|交叉盘/;
+  var FX_KEEP = /黄金|金价|白银|银价|铜价|沪铜|伦铜|贵金属|美联储|联储|议息|加息|降息|通胀|CPI|PPI|美元|收益率|避险|地缘|关税|\bgold\b|\bsilver\b|\bcopper\b|fed\b|fomc|inflation|dollar|yield/i;
+  function isForexOnly(t) {
+    var s = String(t || "");
+    // 【C22 关键】先剥掉**我们自己追加的结论后缀**（「。对贵金属影响：…」「。对铜价影响：…」）：
+    //   这个后缀每条都有，若参与判定会让 FX_KEEP 里的「贵金属」永远命中 → 外汇条目永远放行。
+    s = s.replace(/。对(贵金属|铜价)影响：[\s\S]*$/, "");
+    // 【C22】英文原文也要判：门禁在入库前跑，此时标题可能是英文
+    //   （例："Swiss Franc remains calm as US Dollar steadies on Fed outlook uncertainty"）。
+    if (/swiss franc|new zealand dollar|australian dollar|canadian dollar|euro zone|sterling|yen\b|won\b|rupee|rand\b|real\b|peso|rupiah|baht/i.test(s)) {
+      // 标题主体就是该货币 → 纯外汇事件 → 剔除。
+      // 注意：「US Dollar」「Fed」多只是背景（如 "Swiss Franc remains calm as US Dollar steadies on Fed outlook"），
+      //   主体是瑞郎 → 剔除；背景提及不作为「仍相关」的证据。
+      // 但**货币区的通胀/利率数据本身是有意义的宏观事件**（如 "Euro zone inflation cools to 2.1%"）
+      //   —— 主体是 euro 但说的是通胀 → 不按纯外汇剔。
+      var headEn = (s.split(/[\s,:;—–-]+/).slice(0, 2).join(" ") || "");
+      var isFxSubject = /swiss|new zealand|australian|canadian|euro|sterling|yen|won|rupee|rand|real|peso|rupiah|baht/i.test(headEn);
+      // 【C22】「货币区的宏观数据」是有意义的（欧元区通胀 → 影响美元/贵金属），
+      //   但「该货币区央行的利率决议」对金银铜影响有限（如 BOJ 议息）→ 仍按纯外汇剔。
+      //   例外：**加息/降息预期**是全球实际利率的定价因子，对贵金属有直接含义 → 保留。
+      var isForeignCentralBank = /\b(boj|ecb|rba|boe|bnp|snb)\b|bank of japan|european central bank/i.test(s);
+      var isRateExpectation = /\b(hike|rate hike|cut|rate cut|hike odds|rate path|monetary policy)\b/i.test(s);
+      var isMacroData = (/\b(inflation|cpi|ppi|output|gdp|pmi|unemployment)\b/i.test(s) && !isForeignCentralBank)
+        || isRateExpectation;
+      if (isFxSubject && !isMacroData && !/gold|silver|copper|bullion|precious/i.test(headEn)) return true;
+    }
+    if (!FX_ONLY.test(s)) return false;
+    // 【C22】中文侧同样按「主体」判定：
+    //   「印尼盾连跌六日后迎来反弹」摘要里提到「美联储主席沃什讲话偏鸽派」→ FX_KEEP 命中「美联储」，
+    //   但这条的主体是印尼盾、美联储只是背景 → 仍应剔除。
+    //   做法：若标题**首句**（到第一个句读为止）的主体就是那个外汇货币 → 剔除。
+    var headCn = (s.split(/[。！？；\n]/)[0] || "").trim();
+    var fxSubjectCn = /印尼盾|里拉|比索|卢比|卢布|兹罗提|福林|克朗|瑞郎|法郎|林吉特|泰铢|新元|澳元|纽元|加元|日元|欧元|英镑|韩元|交叉盘/.test(headCn);
+    if (fxSubjectCn) return true;
+    if (FX_KEEP.test(s)) return false;   // 提到贵金属/美联储/美元 → 仍相关
+    return true;
+  }
+
+  /**
+   * 【C22】碎片译文门禁：词典译出的中文若以「仍然」「同时」「此外」「因」等连接词开头，
+   *   或首段只有 1-2 个中文字，说明译文是从句子中间截出来的碎片，
+   *   例如「仍然，因美元企稳美联储前景」→ 用户看不懂 → 不可入库。
+   */
+  function isFragmentZh(t) {
+    var s = String(t || "");
+    if (!/[\u4e00-\u9fa5]/.test(s)) return false;
+    var frags = s.split(/[，,、；;：:]/).map(function (x) { return x.trim(); }).filter(Boolean);
+    if (!frags.length) return false;
+    // 【C22】首段过短（≤3 字）判碎片 —— 但「金价：美联储将加息」这类「主语：结论」是合法结构，
+    //   首段是价格主语（金价/银价/铜价/黄金/白银/铜）→ 不算碎片。
+    var SHORT_SUBJ = /^(金价|银价|铜价|黄金|白银|铜|金|银|美联储|联储|央行|美元|欧央行|关税|地缘|避险)$/;
+    if (frags[0].length <= 3 && !SHORT_SUBJ.test(frags[0])) return true;
+    // 以连接词开头 → 片段（连接词开头说明译文从句子中间截出来的）
+    if (/^(仍然|依然|同时|此外|另外|而且|但是|不过|然而|因此|所以|由于|因为|因|则|就|将|已|据|至|在|与|和|及|对|从|把|被|让|使|为|以|于|其|该|此|这|那|它|他|她|他们|它们)/.test(frags[0])) return true;
+    // 存在 1 字碎片段
+    for (var i = 0; i < frags.length; i++) {
+      var cn = (frags[i].match(/[\u4e00-\u9fa5]/g) || []).length;
+      if (cn <= 1) return true;
+    }
+    return false;
+  }
+
+  /**
+   * 【C22】低质译文门禁：中文里残留**整句英文**，说明翻译失败/拼接错乱。
+   *   典型：FXStreet「Forex Today: Major pairs fail to break out after Fed...」
+   *         → 中文标题「今日，主要突破后美联储，欧洲央行、关键数据」
+   *         → 摘要后面还挂着 "Here is what you need to know on Thursday, October 29:"。
+   *   这类条目看不懂、还占位 → 不入库。
+   *   判定：文本里含中文，且存在 ≥6 个连续英文词（英文源原文不算，只有译错才命中）。
+   */
+  var EN_CLAUSE = /[A-Za-z][A-Za-z'’\-]*(?:\s+[A-Za-z0-9][A-Za-z0-9'’\-:,\.]*){5,}/;
+  function isJunk(t) {
+    var s = String(t || "");
+    if (!/[\u4e00-\u9fa5]/.test(s)) return false;  // 纯英文（原文）不算低质
+    return EN_CLAUSE.test(s);
+  }
+
+  /**
+   * 权威性分级：官方机构 > 通讯社/一线财经 > 门户聚合。
+   * 用于展示时标注来源层级，也是「只要权威信息」的落地依据。
+   * @returns {string} "official" | "wire" | "portal" | "unknown"
+   */
+  function authorityTier(src) {
+    var s = String(src || "");
+    if (/美联储官方|federal reserve|欧洲央行|\becb\b|国家统计局|人民银行|中国央行|海关总署|工信部|发改委|统计局|官方|公告/i.test(s)) return "official";
+    if (/路透|Reuters|彭博|Bloomberg|华尔街日报|WSJ|金融时报|FT|新华|人民|央视|美联储|Fed\b/i.test(s)) return "wire";
+    if (/CNBC|华尔街见闻|财联社|金十|第一财经|新浪财经|东方财富|证券时报|中国证券报|经济观察报|MarketWatch|SeekingAlpha|FXStreet|21世纪/i.test(s)) return "portal";
+    return "unknown";
+  }
+
   /* ================= B. 已知事实 → 更具体的影响结论 ================= */
 
   // 事实 → 对贵金属影响（比通用的「影响偏中性，方向待确认」更具体）
+  // 【C22 重排】顺序原则：**先看利率方向（决定金价的总开关）→ 再看通胀/就业等数据 → 最后兜底**。
+  //   原顺序里「通胀|CPI|PPI」排在前面，导致「安本预计美联储将在12月和3月加息」
+  //   这类**加息预期**条目被误判成「通胀是核心变量」——结论与标题对不上（用户反馈的 bug）。
+  /**
+   * 【C22】识别事件主体央行 —— 影响结论里的「谁加息/降息」必须与标题一致。
+   *   反例（修复前）：「澳洲央行加息预期升温」→ 结论写「美联储转鹰」→ 结论与标题对不上。
+   */
+  function cbSubject(t) {
+    var s = String(t || "");
+    if (/欧洲央行|欧洲中央银行|\becb\b/i.test(s)) return "欧洲央行";
+    if (/日本央行|日本银行|\bboj\b/i.test(s)) return "日本央行";
+    if (/英国央行|英格兰银行|\boe\b/i.test(s)) return "英国央行";
+    if (/加拿大央行|\bboc\b/i.test(s)) return "加拿大央行";
+    if (/澳洲央行|澳大利亚央行|澳洲联储|\brba\b/i.test(s)) return "澳洲央行";
+    if (/新西兰联储|新西兰央行|\brbnz\b/i.test(s)) return "新西兰联储";
+    if (/瑞士央行|\bsnb\b/i.test(s)) return "瑞士央行";
+    if (/中国央行|中国人民银行|央行行长|\bpboc\b/i.test(s)) return "中国央行";
+    if (/美联储|联储|沃什|鲍威尔|\bfed\b/i.test(s)) return "美联储";
+    return "央行";
+  }
   var IMPACT_RULES = [
-    { re: /维持.{0,10}利率|利率.{0,6}不变|不加息|按兵不动|维持利率/, zh: "美联储按兵不动，金价缺少明确方向指引" },
-    { re: /^美联储加息|央行加息/, zh: "美联储转鹰，实际利率上行压制金价" },
-    { re: /美联储降息|央行降息/, zh: "美联储转鸽，实际利率下行支撑金价" },
-    { re: /议息|利率决议|利率决定/, zh: "美联储议息结果落地，市场重新定价利率路径" },
+    // ① 按兵不动 + 内部分歧（比「按兵不动」更具体）
+    { re: /按兵不动[^。；]{0,14}(分歧|反对票|异议|鹰派|鸽派|内部分歧)/, zh: "{CB}按兵不动但内部分歧加剧，利率路径重定价放大金价波动" },
+    // ② 维持利率 / 不加息 / 暂缓加息（**必须排在「加息」规则之前**，否则「暂缓加息」会被判成转鹰）
+    { re: /维持[^。；]{0,14}(利率|区间)|利率维持|维持利率|利率区间|利率不变|预期维持|维持不变|维持现状|不加息|按兵不动|暂缓加息|暂停加息|推迟加息|延后加息|暂不加息|未加息|放弃加息|停止加息/,
+      zh: "{CB}按兵不动，金价缺少明确方向指引" },
+    // ③ 降息 → 转鸽
+    { re: /降息|转鸽|鸽派/, zh: "{CB}转鸽，实际利率下行支撑金价" },
+    // ④ 加息 → 转鹰（排在通胀规则之前）
+    { re: /加息|鹰派|收紧|紧缩/, zh: "{CB}转鹰，实际利率上行压制金价" },
+    // ⑤ 加息/降息预期
+    { re: /加息预期|预期[^。；]{0,12}加息|加息可能|加息风险|加息概率/, zh: "市场预期{CB}加息，实际利率上行压制金价" },
+    { re: /降息预期|预期[^。；]{0,12}降息|降息可能|降息概率/, zh: "市场预期{CB}降息，实际利率下行支撑金价" },
+    // ⑥ 议息结果
+    { re: /议息|决议|利率决定|利率决议|声明全文/, zh: "{CB}议息结果落地，市场重新定价利率路径" },
+    // ⑦ 政策路径 / 点阵图 / 会议纪要
+    { re: /前瞻指引|政策路径|点阵图|经济预测摘要/, zh: "{CB}政策路径指引改变降息预期，直接作用于金价" },
+    { re: /纪要/, zh: "{CB}会议纪要揭示内部立场分歧，加剧金价波动" },
+    // ⑧ 数据面
     { re: /通胀|CPI|PPI/, zh: "通胀是金价定价的核心变量，实际利率随之变化" },
     { re: /非农|失业率|就业/, zh: "就业数据决定降息预期，进而影响金价" },
-    { re: /美债收益率上行/, zh: "美债收益率上行抬高持有黄金的机会成本，金价承压" },
-    { re: /美债收益率下行/, zh: "美债收益率下行降低持金机会成本，金价偏强" },
-    { re: /美元走强/, zh: "美元走强压制以美元计价的金价" },
-    { re: /美元走弱/, zh: "美元走弱对金价构成支撑" },
-    { re: /地缘冲突升级/, zh: "地缘风险推升避险买盘，金价偏强" },
-    { re: /金价大涨|金价下跌|银价|铜价/, zh: "贵金属自身价格波动，注意与基本面脱节的风险" },
+    { re: /PMI|制造业|工业增加值|GDP|经济数据|社融|零售/, zh: "经济数据决定增长与降息预期，进而影响金价" },
+    { re: /美债收益率上行|收益率走高/, zh: "美债收益率上行抬高持有黄金的机会成本，金价承压" },
+    { re: /美债收益率下行|收益率走低/, zh: "美债收益率下行降低持金机会成本，金价偏强" },
+    { re: /美元走强|美元上涨/, zh: "美元走强压制以美元计价的金价" },
+    { re: /美元走弱|美元下跌/, zh: "美元走弱对金价构成支撑" },
+    { re: /地缘冲突升级|地缘风险|冲突升级/, zh: "地缘风险推升避险买盘，金价偏强" },
+    // ⑨ 需求/配置
+    { re: /央行购金|购金|增持黄金|配置黄金|实物需求|\bETF\b/i, zh: "官方购金与配置需求是金价的结构性支撑" },
+    { re: /黄金产量|金矿|矿产金|供应量/, zh: "黄金供给端变化对金价影响弱于实际利率" },
+    // 【C22】以下几条覆盖此前仍会落到「影响偏中性，方向待确认」的正式事件
+    { re: /COMEX|库存|持仓/, zh: "交易所库存与持仓变化反映贵金属实物供需与交割压力" },
+    { re: /资产配置|配置黄金|资金流向/, zh: "利率走向决定大类资产配置节奏，进而影响金价" },
+    { re: /信贷|社融|贷款|货币供应|M2|存款/, zh: "信贷与货币政策数据决定增长预期与利率路径" },
+    { re: /关税/, zh: "关税政策推升避险需求与贸易成本，抬升金价避险溢价" },
+    { re: /收益率[^。；]{0,6}(飙升|攀升|走高|上行|冲高)/, zh: "债券收益率飙升抬高持金机会成本，金价承压" },
+    { re: /债务|赤字|财政/, zh: "财政债务风险推升避险与通胀预期，对金价形成支撑" },
+    // ⑩ 贵金属自身价格
+    { re: /金价|银价|铜价|贵金属|白银|黄金/, zh: "贵金属自身价格波动，注意与基本面脱节的风险" },
   ];
 
   /**
-   * 影响结论：优先用事实推出的具体结论，否则用原有多空判定
+   * 铜的「工业金属」影响结论（与金银的货币属性彻底分开）：
+   * 铜由供需 / 中国工业 / 矿端 / 美元定价，不走「避险 / 实际利率」那套。
+   */
+  var COPPER_IMPACT_RULES = [
+    // 【C22 重排·一】供给端的**方向**必须先判：产量下滑/供给收缩 → 支撑铜价；
+    //   产量增长/供给放量 → 压制铜价。两者不能共用一句「供应端扰动」。
+    { re: /(产量|产铜|产出|供应量|供给量|产能|guidance|指引)[^。；]{0,20}(增长|增加|提升|上调|上修|扩产|放量|创新高|增加至|超预期)|(增长|增加|提升|上调|上修|扩产|放量|创新高)[^。；]{0,16}(产量|产铜|产能|供给|供应|指引)/,
+      zh: "铜供给放量，压制铜价上行空间" },
+    { re: /(产量|产铜|产出|供应量|供给量|产能|guidance|指引)[^。；]{0,20}(下降|减少|下滑|下修|下调|削减|低于预期)|(下降|下滑|下修|下调|削减)[^。；]{0,16}(产量|产铜|产能|供给|供应|指引)/,
+      zh: "铜供给收缩，对铜价形成支撑" },
+    // 【C22 重排·二】供给中断类
+    { re: /停产|事故|罢工|减产|中断|扰动|干扰|检修/, zh: "铜矿供应端扰动，铜价易涨难跌" },
+    // 【C22 重排·三】库存/持仓的**方向**规则必须排在通用「库存」规则之前，
+    //   否则「LME铜库存上升」会被通用规则抢先 → 误判成「铜矿供应端扰动」。
+    { re: /(库存|持仓)[^。；]{0,12}(上升|增加|回补|累积|走高)|(上升|增加|回补|累积|走高)[^。；]{0,12}(库存|持仓)/,
+      zh: "交易所库存上升，铜价上行承压" },
+    { re: /(库存|持仓)[^。；]{0,12}(下降|减少|去化|回落|走低)|(下降|减少|去化|回落|走低)[^。；]{0,12}(库存|持仓)/,
+      zh: "交易所库存下降，铜价支撑增强" },
+    { re: /库存|持仓/, zh: "交易所库存变化反映铜市供需松紧" },
+    // 【C22 重排·四】铜价自身方向（供给/库存都判不出时才用）
+    { re: /(沪铜|伦铜|铜价|LME铜|铜主力)[^。；]{0,10}(偏强|走强|上涨|大涨|收涨|强势)/,
+      zh: "铜价短线走势偏强，基本面与宏观预期共同支撑" },
+    { re: /(沪铜|伦铜|铜价|LME铜|铜主力)[^。；]{0,10}(偏弱|走弱|下跌|大跌|收跌|弱势)/,
+      zh: "铜价短线走势偏弱，基本面与宏观预期共同拖累" },
+    { re: /(沪铜|伦铜|铜价|LME铜|铜主力)[^。；]{0,10}(震荡|整理|窄幅)/,
+      zh: "铜价震荡整理，供需与宏观预期双向博弈" },
+    // 【C22 重排·五】需求侧
+    { re: /电网|电缆|新能源|基建|房地产|制造业|需求|消费|订单/, zh: "工业需求预期变化，主导铜价方向" },
+    // 【C22 重排·六】产量指引（方向不明时也给具体结论，不写「中性待确认」）
+    { re: /指引|guidance/i, zh: "铜企产量指引区间调整，供给预期变化主导铜价方向" },
+    // 【C22 重排·七】以下为宏观/贸易/美元口径
+    { re: /中国/, zh: "中国占全球铜消费近半，中国动向主导铜价" },
+    { re: /关税|贸易/, zh: "铜关税与贸易摩擦直接抬升或压制铜价" },
+    { re: /美元走强/, zh: "美元走强压制以美元计价的铜价" },
+    { re: /美元走弱/, zh: "美元走弱对铜价构成支撑" },
+    { re: /衰退|经济放缓/, zh: "经济衰退预期压制工业金属需求，铜价承压" },
+    // 通用供应扰动（库存已被上面单独处理，这里不再兜「库存」）
+    { re: /铜矿|矿端|冶炼|供应|供给|出口禁令/, zh: "铜矿供应端扰动，铜价易涨难跌" },
+    // LME 升贴水/持仓等交易所数据 → 库存与持仓信号
+    { re: /LME|升贴水|持仓变化|SHFE|沪铜|伦铜/, zh: "交易所库存与持仓变化，反映铜市资金与供需松紧" },
+  ];
+
+  /**
+   * 影响结论：优先用事实推出的具体结论，否则用原有多空判定。
+   * 【C22】金属感知：copper 走工业金属逻辑（供应/需求/中国工业），
+   *   不再套用金银的「避险 / 实际利率」结论；金银仍走货币属性结论。
    * @param {String} fact  zhFact() 的结果（可为空）
    * @param {String} dir   impactOf() 的 up/down/mixed
+   * @param {String} metal 影响结论针对的品种（gold/silver/copper）
    */
-  function zhImpact(fact, dir) {
+  function zhImpact(fact, dir, metal, alt) {
     var f = String(fact || "");
+    var a = String(alt || "");
+    if (metal === "copper") {
+      if (f) {
+        for (var c = 0; c < COPPER_IMPACT_RULES.length; c++) {
+          if (COPPER_IMPACT_RULES[c].re.test(f)) return COPPER_IMPACT_RULES[c].zh;
+        }
+      }
+      if (a && a !== f) {
+        for (var c2 = 0; c2 < COPPER_IMPACT_RULES.length; c2++) {
+          if (COPPER_IMPACT_RULES[c2].re.test(a)) return COPPER_IMPACT_RULES[c2].zh;
+        }
+      }
+      return dir === "up" ? "利多，铜价有望获得支撑"
+        : dir === "down" ? "利空，铜价面临压力"
+        : "影响偏中性，方向待确认";
+    }
     if (f) {
       for (var i = 0; i < IMPACT_RULES.length; i++) {
-        if (IMPACT_RULES[i].re.test(f)) return IMPACT_RULES[i].zh;
+        if (IMPACT_RULES[i].re.test(f)) return IMPACT_RULES[i].zh.replace(/\{CB\}/g, cbSubject(f));
+      }
+    }
+    // 【C22】标题判不出方向时，再退回正文（detail）判一次
+    if (a && a !== f) {
+      for (var j = 0; j < IMPACT_RULES.length; j++) {
+        if (IMPACT_RULES[j].re.test(a)) return IMPACT_RULES[j].zh.replace(/\{CB\}/g, cbSubject(a));
       }
     }
     return dir === "up" ? "利多，价格有望获得支撑"
@@ -192,18 +626,32 @@
   /* ================= C. 国内源解析 + 噪声门禁 ================= */
 
   // 国内快讯：贵金属 / 顶层宏观关键词（比境外源的关键词更严，避免噪声淹没）
-  var CN_HIT = /黄金|金价|白银|银价|铜价|贵金属|稀土|美联储|议息|不加息|加息|降息|利率决定|利率决议|通胀|CPI|PPI|非农|失业率|关税|贸易战|货币政策|美联储主席|经济数据|GDP|衰退|避险|量化宽松|缩表|央行降息|央行加息/;
-  // 国内快讯噪声：日常操作/个股公告类，与贵金属定价无直接关系
-  // 注意：词要「精确」——CN_HIT 已经挡掉绝大多数噪声，这里只补「含宏观关键词但实为噪声」的条目。
-  // 反例：/基金/ 会误杀「联邦基金利率」（美联储议息类必被误杀），故改为基金产品专用词。
-  var CN_NOISE = /地方债|专项债|逆回购|同业存单|中期借贷便利|\bMLF\b|\bSLF\b|中标|缴款|招标|买断式回购|票据发行|净值|份额|申购|赎回|私募|公募|\bETF\b|涨停|跌停|龙虎榜|个股|股东户数|减持|增持|股东大会|回购股份|新股|\bIPO\b|配股|分红|专利|诉讼|直播|带货|销量|门店|加盟/;
+  // 【C22】去掉「稀土」（非本产品追踪品种，会误拉稀土个股/产业新闻）；其余保留。
+  var CN_HIT = /黄金|金价|白银|银价|铜价|贵金属|美联储|议息|不加息|加息|降息|利率决定|利率决议|通胀|CPI|PPI|非农|失业率|关税|贸易战|货币政策|美联储主席|经济数据|GDP|衰退|避险|量化宽松|缩表|央行降息|央行加息/;
+  // 国内快讯噪声：日常操作/个股公告/营销会议/消费轶事/基金流 等与贵金属定价无直接关系的内容。
+  // 【C22 大幅收紧】用户要求只展示权威官方/一线机构事件，过滤市井信息：
+  //   · 会议/论坛/峰会/发布会（腾讯全球数字生态大会这类营销会议）
+  //   · 消费轶事（女子/手镯/金店/金饰/买金 这类「金价下跌，女子花5万买金手镯」）
+  //   · 个股/公司业绩（康斯特：公司…同比增长、研报/券商）
+  //   · 基金流/理财（固收/公募基金/资金涌入/稳健类）
+  //   · 滚动日报/周报/综述（光大期货：有色金属日报 这类无具体事件的栏目）
+  // 注意：词要「精确」——/基金/ 会误杀「联邦基金利率」，故只认基金产品专用词；
+  //   /同比//环比/ 会误杀「美国CPI同比增长3.5%」，故只认「公司…同比/环比」这类个股业绩句式。
+  var CN_NOISE = /地方债|专项债|逆回购|同业存单|中期借贷便利|\bMLF\b|\bSLF\b|中标|缴款|招标|买断式回购|票据发行|净值|份额|申购|赎回|私募|公募|\bETF\b|涨停|跌停|龙虎榜|个股|股东|减持|增持|股东大会|回购股份|新股|\bIPO\b|配股|分红|专利|诉讼|直播|带货|销量|门店|加盟|大会|论坛|峰会|研讨会|博览会|晨会|策略会|发布会|女子|手镯|金店|金饰|项链|珠宝|钻戒|黄金饰品|买金|理财|固收|公募基金|基金产品|资金涌入|稳健类|债基|货基|日报|周报|月报|早报|晚报|晨报|综述|盘点|营销|推广|代言|研报|券商|归母净利润|扣非净利润|每股收益|营业收入|公司[^，。；]{0,15}(增长|营收|净利|业绩|同比|环比)/;
 
   /** 中文标题清洗：把【标题】改成「标题：」，去掉零散空白 */
   function cleanCnHeadline(s) {
     var t = String(s || "").replace(/<!\[CDATA\[|\]\]>/g, "");
+    // 【C22】HTML 实体解码：RSS 标题里的 &#34; / &quot; 不解开会直接显示成乱码
+    t = t.replace(/&#34;/g, '"').replace(/&#0?39;/g, "'").replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'").replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+      .replace(/&#(\d+);/g, function (_, d) { return String.fromCharCode(d); })
+      .replace(/&amp;/g, "&");
     t = t.replace(/【([^】]{1,40})】/g, "$1：");
     t = t.replace(/\[([^\]]{1,40})\]/g, "$1：");
     t = t.replace(/\s+/g, " ").trim();
+    // 【C22】清掉「空格 + 中文标点」（资讯站常见「波澜不惊 ，谷歌财报…」）
+    t = t.replace(/\s+([，。；、：？！）】》])/g, "$1");
     return t;
   }
 
@@ -262,6 +710,24 @@
     return out;
   }
 
+  /** 新浪财经滚动（JSON：result.list[]）→ 标准条目（国内 top 门户源，中文标题天然人话） */
+  function parseSina(body) {
+    var out = [];
+    var j;
+    try { j = JSON.parse(String(body || "")); } catch (e) { return out; }
+    var list = (j && j.result && (j.result.list || j.result.data || j.result.items)) || [];
+    for (var i = 0; i < list.length; i++) {
+      var it = list[i] || {};
+      var title = cleanCnHeadline(it.title || "");
+      if (!title) continue;
+      var summary = cleanCnHeadline(it.summary || it.intro || it.wapsummary || "");
+      var sec = Number(it.intime || it.ctime || 0);   // 新浪时间戳为秒级
+      var date = sec ? isoUtc(sec * 1000) : "";
+      out.push({ title: title, desc: summary, link: it.url || it.wapurl || "", date: date, pub: date, kind: "cn" });
+    }
+    return out;
+  }
+
   /** 快讯类国内源：只保留最近 windowHours 小时内的条目（避免老条目长期占位） */
   function withinHours(dateStr, windowHours) {
     if (!dateStr) return false;
@@ -281,9 +747,24 @@
     cnRelevant: cnRelevant,
     parseEastmoney: parseEastmoney,
     parseWallstreetcn: parseWallstreetcn,
+    parseSina: parseSina,
     withinHours: withinHours,
+    // 【C22】金属差异化相关性 + 市井过滤 + 权威性分级
+    copperRelevant: copperRelevant,
+    copperRelevance: copperRelevance,
+    preciousRelevance: preciousRelevance,
+    isMundane: isMundane,
+    isQuoteOnly: isQuoteOnly,
+    priceSubjectHint: priceSubjectHint,
+    isForexOnly: isForexOnly,
+    isFragmentZh: isFragmentZh,
+    isJunk: isJunk,
+    cbSubject: cbSubject,
+    authorityTier: authorityTier,
     CN_HIT: CN_HIT,
     CN_NOISE: CN_NOISE,
+    MUNDANE: MUNDANE,
+    OFF_TOPIC: OFF_TOPIC,
     RULES: RULES,
   };
 });
