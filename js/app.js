@@ -147,9 +147,10 @@
 
   function ensureMetal(metal) {
     if (cache[metal]) return Promise.resolve(cache[metal]);
-    // 平台版：同源 /api/ 优先（= 真源字节，国内 0.6s，无跨域）→ GH Pages canon 兜底 → 本地静态
+    // 【C32·三端统一】改为 GH Pages 镜像优先（与手机网页/小程序同源同字节）→ 平台 /api 兜底 → 本地静态。
+    // 三端读同一份镜像，更新时间恒一致；镜像偶发滞后也是三端同步滞后，不再互相错位。
     // 静态版：__STATIC__ 时 loadFirst 会自动剔除 /api/，只剩 canon + 本地静态
-    return loadFirst(["/api/data/" + metal + shareQ(), canon(CANON + "data/" + metal + ".json"), "data/" + metal + ".json"]).then(function (d) {
+    return loadFirst([canon(CANON + "data/" + metal + ".json"), "/api/data/" + metal + shareQ(), "data/" + metal + ".json"]).then(function (d) {
       cache[metal] = d;
       return d;
     });
@@ -158,10 +159,11 @@
   function init() {
     parseHash();
     Promise.all([
-      loadFirst(["/api/meta" + shareQ(), canon(CANON + "data/meta.json"), "data/meta.json"]),
-      loadFirst(["/api/events" + shareQ(), canon(CANON + "data/events.json"), "data/events.json"]),
+      // 【C32·三端统一】全部改为 GH Pages 镜像优先（与手机网页/小程序同源同字节），平台 /api 兜底
+      loadFirst([canon(CANON + "data/meta.json"), "/api/meta" + shareQ(), "data/meta.json"]),
+      loadFirst([canon(CANON + "data/events.json"), "/api/events" + shareQ(), "data/events.json"]),
       // 事件独立元信息：老版本接口/文件缺失时容忍 null（更新时间回退为价格时间）
-      loadFirst(["/api/events-meta" + shareQ(), canon(CANON + "data/events.meta.json"), "data/events.meta.json"]).catch(function () { return null; }),
+      loadFirst([canon(CANON + "data/events.meta.json"), "/api/events-meta" + shareQ(), "data/events.meta.json"]).catch(function () { return null; }),
     ])
       .then(function (res) {
         state.meta = res[0];
@@ -830,8 +832,9 @@
     checking = true;
     try {
       var res = await Promise.all([
-        loadFirst(["/api/meta" + shareQ(), canon(CANON + "data/meta.json"), "data/meta.json"]),
-        loadFirst(["/api/events-meta" + shareQ(), canon(CANON + "data/events.meta.json"), "data/events.meta.json"]).catch(function () { return null; }),
+        // 【C32·三端统一】GH Pages 镜像优先，平台 /api 兜底（与手机网页/小程序同源同字节）
+        loadFirst([canon(CANON + "data/meta.json"), "/api/meta" + shareQ(), "data/meta.json"]),
+        loadFirst([canon(CANON + "data/events.meta.json"), "/api/events-meta" + shareQ(), "data/events.meta.json"]).catch(function () { return null; }),
       ]);
       var meta = res[0], evMeta = res[1];
       var priceChanged = !!(meta && meta.generatedAt && (!state.meta || meta.generatedAt !== state.meta.generatedAt));
@@ -848,7 +851,7 @@
       }
       if (eventsChanged) {
         state.eventsMeta = evMeta;
-        state.events = await loadFirst(["/api/events" + shareQ(), canon(CANON + "data/events.json"), "data/events.json"]);
+        state.events = await loadFirst([canon(CANON + "data/events.json"), "/api/events" + shareQ(), "data/events.json"]);
         state.eventPage = 1;
         renderEvents();
       }
