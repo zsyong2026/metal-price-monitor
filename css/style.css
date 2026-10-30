@@ -7,10 +7,28 @@
   --gold: #d4a017;
   --gold-deep: #b8860b;
   --copper: #b5651d;
-  --up: #e23b3b;      /* 涨=红 */
-  --down: #1faa59;    /* 跌=绿 */
+  --up: #d6453c;      /* 涨/利多 = 红（国内惯例）——accent：边/点/淡染 */
+  --down: #1c9d57;    /* 跌/利空 = 绿 */
   --shadow: 0 2px 12px rgba(20,30,50,.06);
   --radius: 14px;
+
+  /* 【C32】canonical token（event-card-design-spec.md §2）：三端统一，
+     并与小程序 components/event-list/index.wxss 的局部 token 逐项对齐。
+     accent + ink 双层：`-ink` 为淡染底上的文字色（更深，保 ≥4.5:1 过 AA）。 */
+  --up-ink: #b22b25;
+  --up-bg: rgba(214, 69, 60, .10);
+  --down-ink: #147a43;
+  --down-bg: rgba(28, 157, 87, .10);
+  --brand: #d4a017;
+  --brand-deep: #b8860b;
+  --ink-2: #5b6472;        /* 事实正文 / 元信息 */
+  --ink-3: #9aa3b2;        /* 分隔线文字、相关性弱字、来源 */
+  --line-2: #eef0f4;
+  --neutral-ink: #5b6472;
+  --neutral-bg: rgba(127, 127, 127, .12);
+  --amber: #b26a00;
+  --amber-ink: #8a5200;
+  --amber-bg: rgba(178, 106, 0, .12);
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -20,6 +38,13 @@
     --ink-soft: #93a0b4;
     --line: #262c38;
     --shadow: 0 2px 16px rgba(0,0,0,.35);
+    /* 深色下 -ink 若仍用浅色版的深色会掉对比度，改用 accent 自身的亮化同色调 */
+    --up-ink: #ef8b81;
+    --down-ink: #63c795;
+    --up-bg: rgba(214, 69, 60, .18);
+    --down-bg: rgba(28, 157, 87, .18);
+    --ink-3: #7c8696;
+    --neutral-ink: #93a0b4;
   }
 }
 * { box-sizing: border-box; }
@@ -208,6 +233,8 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 /* Events */
 /* 事件头：标题与筛选组靠左相邻，更新时间提示级小字推到行末右对齐（margin-left:auto）；
    窄屏折行时时间行仍靠右，不横在中间 */
+/* 事件区容器：720px 可读行宽上限并居中（≠整页 1180px 容器），列表始终单列 */
+.events { max-width: 720px; margin-left: auto; margin-right: auto; }
 .events-head { display: flex; align-items: center; justify-content: flex-start; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
 .events-head h2 { font-size: 17px; margin: 0; }
 .events-filter { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -219,59 +246,92 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
   margin-left: auto; font-size: 10px; color: var(--ink-soft);
   letter-spacing: .2px; line-height: 1.4; white-space: nowrap;
 }
+/* 事件列表容器：始终单列 + 720px 可读行宽上限（EVENT_LIST_REDESIGN §(e)）
+   ——卡片拉满 1180px 时正文一行 90+ 字读起来累，限宽后一行约 45 字。 */
+.events { max-width: 720px; margin-left: auto; margin-right: auto; }
 .event-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .event-item {
-  background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--gold);
-  border-radius: 10px; padding: 12px 14px; box-shadow: var(--shadow);
+  background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--brand);
+  border-radius: 12px; padding: 12px 14px; box-shadow: var(--shadow);
 }
-/* 卡片信息层级（三端统一，突出重点）：
-   标题（最大字号）→ 元信息行（日期/分类/导向/相关性）→ 标签 → 摘要 → 依据行 → 来源 */
-/* 【C31】标题与「查看全部」同处一行：标题截断省略号、按钮末尾内联，不各占一行；移动端同理 */
-.event-item .ei-title-wrap { display: flex; align-items: baseline; margin: 0 0 8px; }
-.event-item .ei-title { font-size: 15px; font-weight: 600; line-height: 1.45; margin: 0; }
-.event-item .ei-title-wrap .ei-title { flex: 1 1 auto; min-width: 0; }
-.event-item .ei-title.clamp { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.event-item .ei-more { flex: 0 0 auto; margin-left: 8px; color: var(--gold-deep); font-size: 12px; cursor: pointer; white-space: nowrap; }
+
+/* ===== 事件卡三层 IA（event-card-design-spec.md §5 / §8.4，EVENT_LIST_REDESIGN §(A)）=====
+   ① PRIMARY 标题（单行，永不折行） ② SECONDARY 事件事实（事实 + 话题标签）
+   ③ TERTIARY 影响结论（方向徽章 + 确定性 + 影响面 + 结论正文 + 相关性弱字）
+   头部不再并列四个胶囊：只留「日期 · 分类」弱信息行。 */
+
+/* ① 弱信息行：日期 · 分类（方向/相关性徽章已移出） */
+.event-item .ei-meta { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; font-size: 11px; color: var(--ink-2); }
+.event-item .ei-date { font-variant-numeric: tabular-nums; }
+.event-item .ei-dot { color: var(--ink-3); }
+.event-item .ei-cat-txt { color: var(--ink-2); }
+
+/* ② 标题：CSS 层永远 nowrap + 省略号兜底（任意长度都不折两行），展开态才允许换行 */
+.event-item .ei-title-wrap { display: flex; align-items: baseline; gap: 8px; margin: 0 0 6px; }
+.event-item .ei-title {
+  flex: 1 1 auto; min-width: 0; margin: 0;
+  font-size: 15px; font-weight: 600; line-height: 1.5; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .event-item .ei-title-wrap.expanded { display: block; }
 .event-item .ei-title-wrap.expanded .ei-title { white-space: normal; }
-.event-item .ei-title-wrap.expanded .ei-more { display: inline-block; margin: 4px 0 0; }
-.event-item .ei-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 8px; }
-.event-item .ei-date { font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; flex-shrink: 0; }
-
-/* 四类胶囊统一规格：同高度（20px）、同圆角（全胶囊）、同字号（11px），
-   只靠配色区分语义——分类=品牌金 / 多空导向=语义红绿灰 / 相关性=强度金灰 / 标签=中性灰 */
-.event-item .ei-cat,
-.event-item .ei-impact,
-.event-item .ei-corr,
-.event-item .ei-tag {
-  display: inline-flex; align-items: center; height: 20px; padding: 0 9px;
-  border-radius: 999px; font-size: 11px; line-height: 1; white-space: nowrap;
-  font-variant-numeric: tabular-nums; flex-shrink: 0;
+/* 「查看全部 ›」用 <button> 语义（键盘 Enter/Space 可达），视觉仍是 12px 小字 */
+.event-item .ei-more {
+  flex: 0 0 auto; appearance: none; -webkit-appearance: none;
+  background: none; border: 0; padding: 0; margin: 0; font-family: inherit;
+  font-size: 12px; font-weight: 600; line-height: 1.5; color: var(--brand-deep);
+  white-space: nowrap; cursor: pointer;
 }
-.event-item .ei-cat { background: rgba(212,160,23,.14); color: var(--gold-deep); font-weight: 600; }
-/* C12-1：多空导向推到元信息行右端（与小程序 .ev-impact 的 margin-left:auto 同口径）——
-   日期+分类靠左（事件属性），利多/利空+相关性靠右（结论属性），两端各归其位 */
-.event-item .ei-impact { font-weight: 600; margin-left: auto; }
-.impact-up { background: rgba(226,59,59,.14); color: var(--up); }
-.impact-down { background: rgba(31,170,89,.16); color: var(--down); }
-.impact-mixed { background: rgba(127,127,127,.16); color: var(--ink-soft); }
-/* 标签是弱化的关键词，用中性灰，不与一级语义胶囊抢眼 */
-.ei-tag { background: #eef0f4; color: var(--ink-soft); font-weight: 500; }
-.event-item .ei-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
-.event-item .ei-summary { font-size: 13px; color: var(--ink-soft); line-height: 1.6; margin: 0 0 8px; }
-/* 【C29】影响结论独立成行（与小程序端一致），金色左栏强调，去掉 web 端冗余的「对X影响：」前缀 */
-.event-item .ei-impact-line { font-size: 13px; color: var(--gold-deep); line-height: 1.6; margin: 0 0 8px; padding-left: 10px; border-left: 2px solid rgba(212,160,23,.4); }
-/* 【C31】事件 / 影响 段内小标签（事件关键词 + 影响面 · 程度）明确贴内容展示 */
-.event-item .ei-part { margin: 0 0 6px; }
-.event-item .ei-part .ei-text { display: inline; }
-.event-item .ei-part.impact-line { padding-left: 10px; border-left: 2px solid rgba(212,160,23,.4); }
-.event-item .ei-stags, .event-item .ei-itags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
-.event-item .ei-itag { display: inline-flex; align-items: center; height: 20px; padding: 0 9px; border-radius: 999px; font-size: 11px; line-height: 1; white-space: nowrap; }
-.event-item .ei-itag.scope { background: rgba(212,160,23,.16); color: var(--gold-deep); }
-.event-item .ei-itag.degree { background: rgba(15,157,88,.14); color: #0b7a43; font-weight: 700; }
-.event-item .ei-source { font-size: 11px; color: var(--ink-soft); opacity: .85; margin: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.ei-link { color: var(--gold-deep); text-decoration: none; font-weight: 600; }
+.event-item .ei-title-wrap.expanded .ei-more { display: inline-block; margin-top: 4px; }
+
+/* ②/③ 分区标签：「── 事件 ──」「── 影响 ──」独占一行 + 1px 通栏分隔线 */
+.event-item .sec-div {
+  display: flex; align-items: center; gap: 8px; margin: 10px 0 6px;
+  color: var(--ink-3); font-size: 11px; font-weight: 700; letter-spacing: 1px;
+}
+.event-item .sec-div::before, .event-item .sec-div::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.event-item .ei-fact { font-size: 13px; line-height: 1.6; color: var(--ink-2); }
+
+/* 话题标签（灰 · 方角 6px）——与影响面胶囊（金染 · 胶囊 999px）形状 + 底色双重区分 */
+.event-item .ei-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
+.event-item .ei-tag {
+  display: inline-flex; align-items: center; font-size: 11px; line-height: 1.4;
+  padding: 2px 7px; border-radius: 6px; background: var(--neutral-bg); color: var(--ink-2);
+}
+
+/* ③ 影响区头部：方向徽章（唯一一次）+ 确定性胶囊（金/琥珀/灰，不用红绿）+ 影响面胶囊 */
+.event-item .impact-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0 0; }
+.event-item .badge.dir {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 12px; font-weight: 700; line-height: 1.4;
+  padding: 1px 8px; border-radius: 999px; white-space: nowrap;
+}
+.event-item .badge-glyph { font-size: 10px; line-height: 1; }
+.event-item .badge.dir.impact-up { color: var(--up-ink); background: var(--up-bg); }
+.event-item .badge.dir.impact-down { color: var(--down-ink); background: var(--down-bg); }
+.event-item .badge.dir.impact-mixed { color: var(--neutral-ink); background: var(--neutral-bg); }
+.event-item .chip-degree {
+  display: inline-flex; align-items: center; font-size: 11px; font-weight: 700; line-height: 1.4;
+  padding: 2px 7px; border-radius: 999px; white-space: nowrap;
+}
+.event-item .chip-degree.deg-high { color: var(--brand-deep); background: rgba(212, 160, 23, .16); }
+.event-item .chip-degree.deg-mid { color: var(--amber-ink); background: var(--amber-bg); }
+.event-item .chip-degree.deg-low { color: var(--neutral-ink); background: var(--neutral-bg); }
+.event-item .ei-itag.scope {
+  display: inline-flex; align-items: center; font-size: 11px; line-height: 1.4;
+  padding: 2px 7px; border-radius: 999px; color: var(--brand-deep);
+  background: rgba(212, 160, 23, .14); white-space: nowrap;
+}
+.event-item .ei-conclusion { font-size: 13px; line-height: 1.6; color: var(--ink); margin-top: 6px; }
+/* 相关性：头部胶囊降权为影响段末端一行弱字（信息保留，不再抢眼） */
+.event-item .ei-corr-weak { font-size: 11px; line-height: 1.4; color: var(--ink-3); margin-top: 8px; }
+.event-item .ei-source { font-size: 11px; color: var(--ink-3); margin: 6px 0 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ei-link { color: var(--brand-deep); text-decoration: none; font-weight: 600; }
 .ei-link:hover { text-decoration: underline; }
+/* a11y：键盘可达的显式焦点环（视觉规格 §9 / EVENT_LIST_REDESIGN §(e)） */
+.ei-more:focus-visible, .ei-link:focus-visible, .chip:focus-visible, .pager button:focus-visible {
+  outline: 2px solid var(--brand-deep); outline-offset: 2px; border-radius: 6px;
+}
 
 /* 事件-价格相关性指数（事件研究法） */
 .corr-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: -4px 0 12px; }
@@ -306,7 +366,7 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 .ei-corr-basis.ei-basis-none { color: var(--ink-soft); opacity: .8; }
 .ei-corr-basis .cb-open { font-style: normal; opacity: .72; margin-left: 5px; font-size: 10.5px; }
 /* 方向结论不用红/绿（利多事件配「绿」字有歧义）：一致=金色强调，背离/中性=灰 */
-.dir-ok { color: var(--gold-deep); font-weight: 600; }
+.dir-ok { color: var(--brand-deep); font-weight: 600; }
 .dir-bad { color: var(--ink-soft); }
 .dir-neutral { color: var(--ink-soft); }
 
@@ -380,16 +440,19 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
   .event-list { gap: 16px; }
   .event-item { padding: 22px 26px; border-radius: 12px; }
   .event-item .ei-title { font-size: 17px; }
-  .event-item .ei-top { gap: 8px; margin: 0 0 12px; }
-  .event-item .ei-cat, .event-item .ei-impact, .event-item .ei-corr, .event-item .ei-tag {
-    height: 24px; padding: 0 12px; font-size: 12px;
-  }
-  .event-item .ei-corr b { font-size: 13.5px; }
-  .event-item .ei-tags { gap: 8px; margin: 0 0 12px; }
-  /* 卡片实测内容宽 1088px（1280 视口），正文不限宽会拉到 77 字/行——读起来累，
-     限 46em（≈46 汉字/行）保住可读行宽，卡片本身仍占满，右侧自然留白不显空 */
-  .event-item .ei-summary { font-size: 14px; line-height: 1.8; max-width: 46em; margin: 0 0 12px; }
-  .event-item .ei-corr-basis { font-size: 12.5px; line-height: 1.8; max-width: 52em; margin: 0 0 12px; }
+  .event-item .ei-title-wrap { margin: 0 0 12px; }
+  .event-item .ei-meta { font-size: 12px; margin: 0 0 10px; }
+  .event-item .ei-tag,
+  .event-item .ei-itag.scope,
+  .event-item .chip-degree { padding: 3px 10px; font-size: 12px; }
+  .event-item .badge.dir { font-size: 12.5px; padding: 2px 10px; }
+  .event-item .ei-tags { gap: 8px; margin: 8px 0 0; }
+  .event-item .impact-head { gap: 8px; margin: 8px 0 0; }
+  /* 正文不限宽会拉到过长行——限 46em（≈46 汉字/行）保住可读行宽 */
+  .event-item .ei-fact,
+  .event-item .ei-conclusion { font-size: 14px; line-height: 1.8; max-width: 46em; }
+  .event-item .ei-corr-weak { font-size: 12px; margin-top: 10px; }
+  .event-item .ei-corr-basis { font-size: 12.5px; line-height: 1.8; max-width: 52em; margin: 6px 0 0; }
   .event-item .ei-source { font-size: 12px; gap: 14px; }
 }
 
@@ -403,4 +466,14 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
   .ev-update { order: 2; }
   .events-filter { order: 3; flex: 1 1 100%; gap: 5px; }
   .events-filter .chip { padding: 2px 8px; font-size: 11px; }
+}
+
+/* 窄屏（<600px）事件列表满宽 + 12px gutter（EVENT_LIST_REDESIGN §(e)） */
+@media (max-width: 600px) {
+  .events { max-width: 100%; padding: 0 12px; }
+}
+
+/* 动效降级：系统开启「减弱动态效果」时停掉 spinner 旋转（a11y） */
+@media (prefers-reduced-motion: reduce) {
+  .spinner, .chart-loading { animation: none !important; transition: none !important; }
 }

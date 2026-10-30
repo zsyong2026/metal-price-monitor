@@ -47,6 +47,21 @@
     var imp = p[1] ? ("影响：" + p[1].trim()) : "";
     return { event: ev, impact: imp };
   }
+  // 【C32】确定性文本 → 配色档位（视觉规格 §6.3：金 / 琥珀 / 灰，不用红绿，避免与方向撞色）
+  //   顺序敏感：「偏强 · 待验证」先命中 high 档，「待确认」兜底只在无方向时落到 low。
+  function degreeCls(deg) {
+    var s = String(deg || "");
+    if (/确定性高|偏强/.test(s)) return "high";
+    if (/中等|偏弱/.test(s)) return "mid";
+    return "low";
+  }
+  // 【C32】相关性：头部胶囊降权为影响段末端一行弱字（信息不丢，只是不再抢眼）
+  function corrWeak(ev) {
+    var c = corrFor(ev);
+    return c ? "相关性 " + c.idx + (c.level ? "·" + c.level : "") : "相关性 —";
+  }
+  // 属性值转义：esc() 只处理 &<>，属性值里还要挡住单双引号截断属性
+  function escAttr(s) { return esc(s).replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
   function round2(v) { return Math.round(v * 100) / 100; }
   function fmtDate(ms, gran) {
     var d = new Date(ms);
@@ -582,7 +597,12 @@
         var more = ev.target && ev.target.closest ? ev.target.closest(".ei-more") : null;
         if (more) {
           var wrap = more.closest(".ei-title-wrap");
-          if (wrap) wrap.classList.toggle("expanded");
+          if (wrap) {
+            var open = wrap.classList.toggle("expanded");
+            // a11y：按钮语义 + aria-expanded 同步 + 文案切换（视觉规格 §6.1）
+            more.setAttribute("aria-expanded", open ? "true" : "false");
+            more.textContent = open ? "收起 ›" : "查看全部 ›";
+          }
         }
       });
       ul.__evTitleWired = true;
@@ -590,6 +610,8 @@
     ul.innerHTML = pageItems.map(function (e) {
       var impCls = e.impact === "up" ? "impact-up" : e.impact === "down" ? "impact-down" : "impact-mixed";
       var impTxt = e.impact === "up" ? "利多" : e.impact === "down" ? "利空" : "中性";
+      // a11y：不靠颜色 alone 传达方向（红绿色盲 / 国内外红绿语义相反），带 ▲▼— 字形
+      var impGlyph = e.impact === "up" ? "▲" : e.impact === "down" ? "▼" : "—";
       var href = e.url ? String(e.url).replace(/&/g, "&amp;").replace(/"/g, "&quot;") : "";
       var origHtml = href
         ? "<a class='ei-link' href='" + href + "' target='_blank' rel='noopener' title='" + esc(e.origTitle || "") + "'>查看原文 ↗</a>"
@@ -597,33 +619,53 @@
       // 标签与小程序端统一：滤掉方向性废话（走强/走弱，多空导向胶囊已表达），最多 6 个
       var evTags = (e.tags || []).filter(function (t) { return t !== "走强" && t !== "走弱"; }).slice(0, 6)
         .map(function (t) { return "<span class='ei-tag'>" + esc(t) + "</span>"; }).join("");
-      var sc = (e.impactScope || []).slice(0, 5)
-        .map(function (x) { return "<span class='ei-itag scope'>" + esc(x) + "</span>"; }).join("");
-      var deg = e.impactDegree ? "<span class='ei-itag degree'>" + esc(e.impactDegree) + "</span>" : "";
-      // 信息层级（三端统一）：标题 → 元信息行 → 事件(含事件小标签) / 影响(含影响面·程度小标签) → 依据 → 来源
+      var scope = (e.impactScope || []).slice(0, 5);
+      var degree = e.impactDegree || "";
+      var sp = splitSummary(e.summary);
+      // 【C32】影响结论：优先用数据层现场组句的 impactConclusion（125 条 → 70 种，去模板化），
+      //   旧数据（未回填）回退到 summary 切分出的结论段，再兜底到多空方向预期句。
+      var conclusion = e.impactConclusion || String(sp.impact || "").replace(/^影响：/, "") ||
+        (impTxt + "（事件窗走完将给出统计结论）");
+      // a11y：读屏串联「方向；影响范围；确定性；结论」（视觉规格 §6.2）
+      var aria = [impTxt];
+      if (scope.length) aria.push("影响范围：" + scope.join("、"));
+      if (degree) aria.push("确定性：" + degree);
+      aria.push("结论：" + conclusion);
+      // 卡片三层 IA（PRIMARY 标题 → SECONDARY 事件事实 → TERTIARY 影响结论）
+      //   头部只留「日期 · 分类」弱信息行；方向徽章只在影响区出现一次；相关性降为末端弱字。
+      //   顺序与小程序严格对齐（EVENT_LIST_REDESIGN §(b) 单卡模板）：标题 → 元信息行 → 事件段 → 影响段
       return "<li class='event-item'>" +
         "<div class='ei-title-wrap'>" +
-          "<div class='ei-title" + (e.title.length > 22 ? " clamp" : "") + "'>" + esc(e.title) + "</div>" +
-          (e.title.length > 22 ? "<span class='ei-more'>查看全部 ›</span>" : "") +
+          "<div class='ei-title' role='heading' aria-level='3'>" + esc(e.title) + "</div>" +
+          "<button type='button' class='ei-more' aria-expanded='false' hidden>查看全部 ›</button>" +
         "</div>" +
-        "<div class='ei-top'>" +
-          "<span class='ei-date'>" + e.date + "</span>" +
-          "<span class='ei-cat'>" + e.category + "</span>" +
-          "<span class='ei-impact " + impCls + "'>" + impTxt + "</span>" +
-          corrBadge(e) +
+        "<div class='ei-meta'>" +
+          "<span class='ei-date'>" + esc(e.date) + "</span>" +
+          "<span class='ei-dot'>·</span>" +
+          "<span class='ei-cat-txt'>" + esc(e.category) + "</span>" +
         "</div>" +
-        (function () {
-          var sp = splitSummary(e.summary);
-          var html = "<div class='ei-summary'>";
-          if (sp.event) html += "<div class='ei-part'><span class='ei-label'>事件</span><span class='ei-text'>" + esc(sp.event) + "</span>" + (evTags ? "<div class='ei-stags'>" + evTags + "</div>" : "") + "</div>";
-          if (sp.impact) html += "<div class='ei-part impact-line'><span class='ei-label impact'>影响</span><span class='ei-text'>" + esc(sp.impact) + "</span>" + ((sc || deg) ? "<div class='ei-itags'>" + sc + deg + "</div>" : "") + "</div>";
-          html += "</div>";
-          return html;
-        })() +
+        "<div class='sec-div'><span>事件</span></div>" +
+        "<div class='ei-fact'>" + esc(sp.event) + "</div>" +
+        (evTags ? "<div class='ei-tags'>" + evTags + "</div>" : "") +
+        "<div class='sec-div'><span>影响</span></div>" +
+        "<div class='impact-head' aria-label=\"" + escAttr(aria.join("；")) + "\">" +
+          "<span class='badge dir " + impCls + "'><span class='badge-glyph'>" + impGlyph + "</span>" + impTxt + "</span>" +
+          (degree ? "<span class='chip-degree deg-" + degreeCls(degree) + "'>" + esc(degree) + "</span>" : "") +
+          scope.map(function (x) { return "<span class='ei-itag scope'>" + esc(x) + "</span>"; }).join("") +
+        "</div>" +
+        "<div class='ei-conclusion'>" + esc(conclusion) + "</div>" +
+        "<div class='ei-corr-weak'>" + esc(corrWeak(e)) + "</div>" +
         corrBasis(e) +
         "<div class='ei-source'>来源：" + esc(e.source) + (e.auto ? " ｜ AI 归纳" : "") + origHtml + "</div>" +
         "</li>";
     }).join("");
+    // 「查看全部 ›」显隐：渲染后按实测溢出决定（比「字符数 > 22」准，短英文标题不会被误判）。
+    //   折行由 CSS nowrap + 省略号兜底，这里只控制按钮入口（视觉规格 §6.1）。
+    Array.prototype.forEach.call(ul.querySelectorAll(".ei-title-wrap"), function (w) {
+      var t = w.querySelector(".ei-title"), more = w.querySelector(".ei-more");
+      if (!t || !more) return;
+      if (t.scrollWidth > t.clientWidth + 1) more.hidden = false;
+    });
 
     // 当前筛选范围的平均相关性指数（覆盖全部页，非仅当前页）
     var corrVals = [];
