@@ -38,6 +38,15 @@
   function esc(s) {
     return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
+  // 【C29】与小程序端统一：摘要 =「事件概况。对(贵金属|铜价)影响：结论」两段式，
+  //   拆成「概况」与「影响：结论」分别渲染，去掉 web 端原本冗余的「对X影响：」前缀。
+  function splitSummary(raw) {
+    var s = String(raw || "").replace(/^【[^】]{1,12}】\s*/, "");
+    var p = s.split(/。对(贵金属|铜价)影响：/);
+    var ev = (p[0] || "").trim();
+    var imp = p[1] ? ("影响：" + p[1].trim()) : "";
+    return { event: ev, impact: imp };
+  }
   function round2(v) { return Math.round(v * 100) / 100; }
   function fmtDate(ms, gran) {
     var d = new Date(ms);
@@ -585,7 +594,7 @@
         corrBadge(e) +
         "</div>" +
         (tagsHtml ? "<div class='ei-tags'>" + tagsHtml + "</div>" : "") +
-        "<div class='ei-summary'>" + esc(String(e.summary || "").replace(/^【[^】]{1,12}】\s*/, "")) + "</div>" +
+        (function () { var sp = splitSummary(e.summary); return "<div class='ei-summary'>" + esc(sp.event) + (sp.impact ? "<div class='ei-impact-line'>" + esc(sp.impact) + "</div>" : "") + "</div>"; })() +
         corrBasis(e) +
         "<div class='ei-source'>来源：" + esc(e.source) + (e.auto ? " ｜ AI 归纳" : "") + origHtml + "</div>" +
         "</li>";

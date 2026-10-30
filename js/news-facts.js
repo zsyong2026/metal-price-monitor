@@ -519,10 +519,10 @@
     // ⑦ 政策路径 / 点阵图 / 会议纪要
     { re: /前瞻指引|政策路径|点阵图|经济预测摘要/, zh: "{CB}政策路径指引改变降息预期，直接作用于金价" },
     { re: /纪要/, zh: "{CB}会议纪要揭示内部立场分歧，加剧金价波动" },
-    // ⑧ 数据面
-    { re: /通胀|CPI|PPI/, zh: "通胀是金价定价的核心变量，实际利率随之变化" },
-    { re: /非农|失业率|就业/, zh: "就业数据决定降息预期，进而影响金价" },
-    { re: /PMI|制造业|工业增加值|GDP|经济数据|社融|零售/, zh: "经济数据决定增长与降息预期，进而影响金价" },
+    // ⑧ 数据面（【C29】改为函数：把命中的具体指标嵌进结论，避免「通胀类」事件结论千篇一律雷同）
+    { re: /通胀|CPI|PPI/, zh: function (s) { var m = /PPI/i.test(s) ? "PPI" : /CPI/i.test(s) ? "CPI" : "通胀数据"; return m + "是金价定价的核心变量，实际利率随之变化，短线方向取决于数据超预期幅度"; } },
+    { re: /非农|失业率|就业/, zh: function (s) { var m = /非农/i.test(s) ? "非农就业" : /失业率/i.test(s) ? "失业率" : "就业数据"; return m + "决定降息预期，进而引导金价方向，幅度看与预期的偏差"; } },
+    { re: /PMI|制造业|工业增加值|GDP|经济数据|社融|零售/, zh: function (s) { var m = /GDP/i.test(s) ? "GDP" : /PMI/i.test(s) ? "PMI" : /社融/i.test(s) ? "社融" : /零售/i.test(s) ? "零售" : /制造业/i.test(s) ? "制造业" : "经济数据"; return m + "反映增长与降息预期，是金价中期方向的关键变量"; } },
     { re: /美债收益率上行|收益率走高/, zh: "美债收益率上行抬高持有黄金的机会成本，金价承压" },
     { re: /美债收益率下行|收益率走低/, zh: "美债收益率下行降低持金机会成本，金价偏强" },
     { re: /美元走强|美元上涨/, zh: "美元走强压制以美元计价的金价" },
@@ -538,8 +538,8 @@
     { re: /关税/, zh: "关税政策推升避险需求与贸易成本，抬升金价避险溢价" },
     { re: /收益率[^。；]{0,6}(飙升|攀升|走高|上行|冲高)/, zh: "债券收益率飙升抬高持金机会成本，金价承压" },
     { re: /债务|赤字|财政/, zh: "财政债务风险推升避险与通胀预期，对金价形成支撑" },
-    // ⑩ 贵金属自身价格
-    { re: /金价|银价|铜价|贵金属|白银|黄金/, zh: "贵金属自身价格波动，注意与基本面脱节的风险" },
+    // ⑩ 贵金属自身价格（【C29】按金/银区分，避免一律写「贵金属」）
+    { re: /金价|银价|铜价|贵金属|白银|黄金/, zh: function (s) { var m = /白银|银价/i.test(s) ? "白银" : /黄金|金价/i.test(s) ? "黄金" : "贵金属"; return m + "自身价格波动，注意与基本面脱节的风险，短线以技术面为主"; } },
     // 【C23】央行人事 / 领导层：权威政策事件，但改变的是**政策路径预期**而非当期利率方向，
     //   故放在末尾（不与 DIR_COUNT 内的方向类竞争），仅在前面规则都不命中时兜住，
     //   避免落到「影响偏中性，方向待确认」。
@@ -610,44 +610,51 @@
    * @param {String} dir   impactOf() 的 up/down/mixed
    * @param {String} metal 影响结论针对的品种（gold/silver/copper）
    */
+  // 【C29】规则命中解析：支持 zh 既可以是字符串（含 {CB} 占位，按来源填央行名），
+  //   也可以是函数（入参为命中来源文本，用于把具体指标嵌进结论，做出差异化）。
+  function resolveImpact(rules, src) {
+    for (var i = 0; i < rules.length; i++) {
+      if (rules[i].re.test(src)) {
+        var z = rules[i].zh;
+        var out = typeof z === "function" ? z(src) : z.replace(/\{CB\}/g, cbSubject(src));
+        return { txt: out, idx: i };
+      }
+    }
+    return null;
+  }
   function zhImpact(fact, dir, metal, alt) {
     var f = String(fact || "");
     var a = String(alt || "");
     if (metal === "copper") {
-      if (f) {
-        for (var c = 0; c < COPPER_IMPACT_RULES.length; c++) {
-          if (COPPER_IMPACT_RULES[c].re.test(f)) return COPPER_IMPACT_RULES[c].zh;
-        }
-      }
-      if (a && a !== f) {
-        for (var c2 = 0; c2 < COPPER_IMPACT_RULES.length; c2++) {
-          if (COPPER_IMPACT_RULES[c2].re.test(a)) return COPPER_IMPACT_RULES[c2].zh;
-        }
-      }
-      return dir === "up" ? "利多，铜价有望获得支撑"
-        : dir === "down" ? "利空，铜价面临压力"
-        : "影响偏中性，方向待确认";
+      var c1 = f ? resolveImpact(COPPER_IMPACT_RULES, f) : null;
+      if (!c1 && a && a !== f) c1 = resolveImpact(COPPER_IMPACT_RULES, a);
+      if (c1) return c1.txt + "（影响偏直接）";
+      // 【C29】兜底：方向感知 + 程度，绝不以「影响」二字开头（避免 UI 出现「影响：影响…」）
+      if (dir === "up") return "铜价短线偏强，但上行持续性待库存与需求数据确认（方向待验证）";
+      if (dir === "down") return "铜价短线承压，关注矿端扰动与下游需求能否接力（方向待验证）";
+      return "铜价方向暂不明，短线波动有限，关注后续库存与需求数据";
     }
     // 【C23】标题优先 + 方向兜底（修「标题泛化压掉正文具体方向」）
     //   ① 标题命中「方向类」规则 → 以标题为准（标题已给明确方向，正文不得覆盖）；
-    //   ② 标题只命中「事件类」泛化规则、而正文含明确方向 → 用正文的方向结论
-    //      （否则「议息结果落地」会压掉「维持联邦基金利率目标区间」这种真正对得上的结论）；
+    //   ② 标题只命中「事件类」泛化规则、而正文含明确方向 → 用正文的方向结论；
     //   ③ 两者都是泛化规则 → 仍以标题为准（保持「结论主体 = 标题主体」）。
-    var tIdx = -1, aIdx = -1;
-    for (var k = 0; k < IMPACT_RULES.length; k++) {
-      if (tIdx < 0 && IMPACT_RULES[k].re.test(f)) tIdx = k;
-      if (aIdx < 0 && a && a !== f && IMPACT_RULES[k].re.test(a)) aIdx = k;
-      if (tIdx >= 0 && aIdx >= 0) break;
+    var t = f ? resolveImpact(IMPACT_RULES, f) : null;
+    var al = (!t && a && a !== f) ? resolveImpact(IMPACT_RULES, a) : null;
+    var pick = null, src = f;
+    if (t && t.idx < DIR_COUNT) { pick = t; src = f; }
+    else if (al && al.idx < DIR_COUNT) { pick = al; src = a; }
+    else if (t) { pick = t; src = f; }
+    else if (al) { pick = al; src = a; }
+    if (pick) {
+      // 【C29】影响程度/确定性提示：
+      //   方向类规则（利率方向已定）→ 影响偏直接；事件/数据类泛化规则 → 幅度视后续数据而定。
+      var deg = pick.idx < DIR_COUNT ? "（影响偏直接）" : "（幅度视后续数据而定）";
+      return pick.txt + deg;
     }
-    var pick = -1, pickSrc = f;
-    if (tIdx >= 0 && tIdx < DIR_COUNT) { pick = tIdx; pickSrc = f; }
-    else if (aIdx >= 0 && aIdx < DIR_COUNT) { pick = aIdx; pickSrc = a; }
-    else if (tIdx >= 0) { pick = tIdx; pickSrc = f; }
-    else if (aIdx >= 0) { pick = aIdx; pickSrc = a; }
-    if (pick >= 0) return IMPACT_RULES[pick].zh.replace(/\{CB\}/g, cbSubject(pickSrc));
-    return dir === "up" ? "利多，价格有望获得支撑"
-      : dir === "down" ? "利空，价格面临压力"
-      : "影响偏中性，方向待确认";
+    // 【C29】兜底：方向感知 + 程度，绝不以「影响」二字开头（消除「影响：影响偏中性」式冗余）
+    if (dir === "up") return "利多信号偏明确，金价短线有望获得支撑（关注实际利率变化验证）";
+    if (dir === "down") return "利空压力偏直接，金价短线面临回调压力（关注实际利率变化验证）";
+    return "事件方向中性，短线对金价影响有限，需后续数据确认";
   }
 
   /* ================= C. 国内源解析 + 噪声门禁 ================= */

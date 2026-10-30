@@ -251,6 +251,8 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 .ei-tag { background: #eef0f4; color: var(--ink-soft); font-weight: 500; }
 .event-item .ei-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
 .event-item .ei-summary { font-size: 13px; color: var(--ink-soft); line-height: 1.6; margin: 0 0 8px; }
+/* 【C29】影响结论独立成行（与小程序端一致），金色左栏强调，去掉 web 端冗余的「对X影响：」前缀 */
+.event-item .ei-impact-line { font-size: 13px; color: var(--gold-deep); line-height: 1.6; margin: 0 0 8px; padding-left: 10px; border-left: 2px solid rgba(212,160,23,.4); }
 .event-item .ei-source { font-size: 11px; color: var(--ink-soft); opacity: .85; margin: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ei-link { color: var(--gold-deep); text-decoration: none; font-weight: 600; }
 .ei-link:hover { text-decoration: underline; }
