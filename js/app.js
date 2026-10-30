@@ -608,16 +608,26 @@
       ul.__evTitleWired = true;
     }
     ul.innerHTML = pageItems.map(function (e) {
-      var impCls = e.impact === "up" ? "impact-up" : e.impact === "down" ? "impact-down" : "impact-mixed";
-      var impTxt = e.impact === "up" ? "利多" : e.impact === "down" ? "利空" : "中性";
+      // 【C32-bugfix】方向徽章取「机制修正后的有效方向」impactEff，与结论正文同源
+      //   （旧口径下徽章按关键词分类器、结论按机制判定，实测 22 条「徽章中性 + 结论承压」互相打脸）
+      var eff = e.impactEff || e.impact;
+      var impCls = eff === "up" ? "impact-up" : eff === "down" ? "impact-down" : "impact-mixed";
+      var impTxt = eff === "up" ? "利多" : eff === "down" ? "利空" : "中性";
       // a11y：不靠颜色 alone 传达方向（红绿色盲 / 国内外红绿语义相反），带 ▲▼— 字形
-      var impGlyph = e.impact === "up" ? "▲" : e.impact === "down" ? "▼" : "—";
+      var impGlyph = eff === "up" ? "▲" : eff === "down" ? "▼" : "—";
       var href = e.url ? String(e.url).replace(/&/g, "&amp;").replace(/"/g, "&quot;") : "";
       var origHtml = href
         ? "<a class='ei-link' href='" + href + "' target='_blank' rel='noopener' title='" + esc(e.origTitle || "") + "'>查看原文 ↗</a>"
         : "";
-      // 标签与小程序端统一：滤掉方向性废话（走强/走弱，多空导向胶囊已表达），最多 6 个
-      var evTags = (e.tags || []).filter(function (t) { return t !== "走强" && t !== "走弱"; }).slice(0, 6)
+      // 标签与小程序端统一：滤掉方向性废话（走强/走弱，多空导向胶囊已表达）+ 互斥标签
+      //   （「按兵不动」曾被同时打上「不加息」「加息」，两个相反标签并列会让人直接不信这条结论）
+      var rawTags = (e.tags || []).filter(function (t) { return t !== "走强" && t !== "走弱"; });
+      if (rawTags.indexOf("不加息") >= 0) rawTags = rawTags.filter(function (t) { return t !== "加息"; });
+      if (rawTags.indexOf("加息") >= 0 && rawTags.indexOf("降息") >= 0) {
+        var keepHike = /加息|鹰派|收紧|紧缩/.test(String(e.title || ""));
+        rawTags = rawTags.filter(function (t) { return t !== (keepHike ? "降息" : "加息"); });
+      }
+      var evTags = rawTags.slice(0, 6)
         .map(function (t) { return "<span class='ei-tag'>" + esc(t) + "</span>"; }).join("");
       var scope = (e.impactScope || []).slice(0, 5);
       var degree = e.impactDegree || "";

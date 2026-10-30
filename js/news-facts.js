@@ -657,6 +657,494 @@
     return "事件方向中性，短线对金价影响有限，需后续数据确认";
   }
 
+  /**
+   * 【C31】影响面（受冲击的具体资产 / 市场）：按品种 + 事实关键词，列出被直接冲击的品种与关联市场，
+   *   让「影响」不再只是笼统一句，而是明确「影响哪些东西」。
+   * @returns {String[]} 影响面清单（去重、保序）
+   */
+  // 关键词命中辅助（用 indexOf 而非正则，规避中文正则字面量在本文件中的异常匹配问题）
+  function hasAny(s, arr) {
+    for (var i = 0; i < arr.length; i++) { if (s.indexOf(arr[i]) >= 0) return true; }
+    return false;
+  }
+  function impactScope(metal, fact, alt) {
+    var s = String(fact || "") + " " + String(alt || "");
+    var scope = [];
+    if (metal === "copper") {
+      scope.push("沪铜 / 伦铜");
+      if (hasAny(s, ["库存", "持仓", "交割", "仓单", "保税", "SHFE", "LME", "升贴水"])) scope.push("库存与区域价差");
+      if (hasAny(s, ["矿端", "罢工", "停产", "减产", "检修", "事故", "供应", "供给", "出口禁令", "冶炼", "扰动", "干扰"])) scope.push("铜矿供应");
+      if (hasAny(s, ["电网", "电缆", "新能源", "基建", "房地产", "制造业", "需求", "消费", "订单"])) scope.push("工业需求端");
+      if (hasAny(s, ["关税", "贸易"])) scope.push("贸易成本");
+      if (hasAny(s, ["美元走强", "美元走弱", "美元"])) scope.push("美元定价");
+    } else {
+      scope.push(metal === "silver" ? "银价 / 白银T+D" : "金价 / AU9999");
+      if (hasAny(s, ["利率", "加息", "降息", "议息", "决议", "美联储", "央行", "点阵图", "前瞻指引", "纪要", "货币"])) scope.push("实际利率与美元");
+      if (hasAny(s, ["通胀", "CPI", "PPI", "非农", "失业率", "就业", "GDP", "PMI", "社融", "零售"])) scope.push("通胀与实际利率预期");
+      if (hasAny(s, ["地缘", "冲突", "制裁", "避险", "关税", "债务危机", "债务风险", "主权债务", "财政赤字", "财政风险"])) scope.push("避险买盘");
+      if (hasAny(s, ["央行购金", "购金", "增持黄金", "配置黄金", "ETF", "实物需求"])) scope.push("央行购金与ETF配置");
+    }
+    var seen = {};
+    return scope.filter(function (x) { if (seen[x]) return false; seen[x] = 1; return true; });
+  }
+
+  /**
+   * 【C31】影响程度分级：按命中规则类别 + 多空方向，给出确定性 / 幅度分级。
+   *   方向类规则（利率方向已定）→ 确定性高；数据 / 供需类 → 中等（幅度视数据 / 事件驱动）；
+   *   兜底（无明确规则）→ 随方向标「待验证」。
+   * @returns {String} 程度描述（短标签）
+   */
+  function impactDegree(metal, fact, alt, dir) {
+    var f = String(fact || "");
+    var a = String(alt || "");
+    var rules = metal === "copper" ? COPPER_IMPACT_RULES : IMPACT_RULES;
+    var hit = (f ? resolveImpact(rules, f) : null) || ((a && a !== f) ? resolveImpact(rules, a) : null);
+    if (hit) {
+      if (hit.idx < DIR_COUNT) return "确定性高 · 方向已定";
+      if (/通胀|CPI|PPI|非农|失业率|就业|GDP|PMI|社融|零售|经济数据|库存|持仓|需求|消费|订单/) return "中等 · 幅度视数据";
+      return "中等 · 事件驱动";
+    }
+    return dir === "up" ? "偏强 · 待验证" : dir === "down" ? "偏弱 · 待验证" : "中性 · 待确认";
+  }
+
+  /**
+   * 【C32 · P0】自然语言影响结论（替代 zhImpact 的「规则→整句」查表）。
+   *
+   * 【为什么必须改数据层】用户反馈：「事件影响的结论，还是跟没有一样，制式、模版式展示」。
+   *   实测线上 125 条事件只有 25 种不同结论，89.6% 的条目与他人重复 —— 根因是
+   *   zhImpact() 属于「规则命中 → 返回一整句固定文案」的查表，同一机制必然产出同一句。
+   *   所以清洗措辞救不了，必须**现场组句**。
+   *
+   * 【组句公式】= 具体锚点句（指标/实际值vs预期值/央行主体）+ 传导机制句（机制 × 方向）
+   *              + 资产方向句（按 dir）+ 验证锚点句（下一步看什么）
+   *   → 同一机制下的不同事件，因「实际值 vs 预期值」「央行主体」不同而产出不同句子。
+   *
+   * 【质量门禁】输出若仍含「影响偏中性，方向待确认」或长度 < 12 → 退回「机制+资产」兜底句。
+   */
+
+  // 指标识别（顺序敏感：核心PCE 必须先于 PCE；否则「核心PCE」会被识别成 PCE）
+  var INDICATOR_RULES = [
+    { re: /核心\s*PCE/i, label: "核心PCE" },
+    { re: /PCE/i, label: "PCE" },
+    { re: /PPI/i, label: "PPI" },
+    { re: /CPI/i, label: "CPI" },
+    { re: /非农/i, label: "非农就业" },
+    { re: /失业率/i, label: "失业率" },
+    { re: /GDP/i, label: "GDP" },
+    { re: /PMI/i, label: "PMI" },
+    { re: /社融/i, label: "社融" },
+    { re: /零售/i, label: "零售" },
+    { re: /通胀/i, label: "通胀数据" },
+    { re: /收益率/i, label: "美债收益率" },
+    { re: /美元/i, label: "美元" },
+  ];
+  function indicatorOf(s) {
+    for (var i = 0; i < INDICATOR_RULES.length; i++) {
+      if (INDICATOR_RULES[i].re.test(s)) return INDICATOR_RULES[i].label;
+    }
+    return "";
+  }
+
+  // 实际值 vs 预期值：优先做数值比较（"同比 4.2%，预期 4.6%"），再做语义匹配。
+  //   这是让「通胀类」结论真正分化的关键 —— 8 条通胀事件原本共用同一句。
+  function surpriseOf(s) {
+    var t = String(s || "");
+    var m = t.match(/(\d+(?:\.\d+)?)\s*%[^%]{0,24}?预期\s*(\d+(?:\.\d+)?)\s*%/);
+    if (m) {
+      var a = parseFloat(m[1]), e = parseFloat(m[2]);
+      if (!isNaN(a) && !isNaN(e)) {
+        if (a > e) return "hot";
+        if (a < e) return "cold";
+        return "flat";
+      }
+    }
+    if (/超预期|高于预期|超出预期|创[^，。；]{0,8}新高|升至|涨至|攀升|走高|加速上行|上行至|反弹/.test(t)) return "hot";
+    if (/低于预期|逊于预期|不及预期|回落至|降至|放缓|跌至|走弱|创[^，。；]{0,8}新低|回落/.test(t)) return "cold";
+    if (/符合预期|符合市场预期|与预期持平|持平|预期之内|预期内|符合此前/.test(t)) return "flat";
+    return "";
+  }
+  // 首个百分比（实际值），用于把「具体数字」写进结论
+  function actualNumOf(s) {
+    var m = String(s || "").match(/(\d+(?:\.\d+)?)\s*%/);
+    return m ? m[1] + "%" : "";
+  }
+
+  // 机制判定：加权计分 → 取分数最高的 1~2 个机制（多机制可叠加，如「通胀 + 加息预期」）
+  function mechScores(s, defs) {
+    var sc = {};
+    for (var i = 0; i < defs.length; i++) {
+      if (defs[i].re.test(s)) sc[defs[i].key] = defs[i].w;
+    }
+    return sc;
+  }
+  function topMechs(sc, defs, max) {
+    var arr = [];
+    for (var k in sc) if (Object.prototype.hasOwnProperty.call(sc, k)) arr.push({ key: k, w: sc[k] });
+    // 分数降序；同分按 defs 中的优先级（defs 越靠前优先级越高）
+    var idx = {};
+    for (var i = 0; i < defs.length; i++) idx[defs[i].key] = i;
+    arr.sort(function (a, b) { return (b.w - a.w) || (idx[a.key] - idx[b.key]); });
+    var picked = arr.slice(0, max || 1);
+    // 「price / cu_price」（资产自身价格波动）只适合当**唯一**机制：
+    //   它几乎在每条标题里都会命中（提到「金价」就算），若作为第二机制叠加，
+    //   会给「美联储加息」这类结论尾巴上挂一句「金价自身价格波动与基本面背离」→ 反而变噪声。
+    if (picked.length > 1) {
+      picked = picked.filter(function (x) { return x.key !== "price" && x.key !== "cu_price"; });
+    }
+    // 【C32-bugfix】同义机制不叠加：铜的「工业需求」与「中国/全球增长」结论都以「主导铜价方向」收尾，
+    //   两条一起上就变成「…主导铜价方向，…主导铜价方向」（实拍重复）。保权重高的那个。
+    if (picked.length > 1) {
+      var has = {};
+      for (var p = 0; p < picked.length; p++) has[picked[p].key] = 1;
+      if (has.cu_demand && has.cu_macro) {
+        picked = picked.filter(function (x) { return x.key !== "cu_macro"; });
+      }
+      if (has.inflation && has.growth && picked.length > 2) {
+        picked = picked.slice(0, 2);
+      }
+    }
+    return picked;
+  }
+
+  /* ---------- 贵金属（货币属性）机制定义 ---------- */
+  var PRECIOUS_MECHS = [
+    { key: "centralbuy", w: 4, re: /央行购金|购金|增持黄金|黄金储备|官方储备|储备增持/ },
+    { key: "safehaven", w: 4, re: /地缘|冲突|战争|制裁|避险|空袭|停火|袭击/ },
+    { key: "trade", w: 4, re: /关税|贸易战|出口管制|对等关税|贸易摩擦/ },
+    { key: "fiscal", w: 4, re: /赤字|债务|财政|国债发行|主权信用/ },
+    // 【C32-bugfix】补「声明 / 会议纪要 / 政策报告」：否则「美联储10月声明全文对比」会落进通胀机制，
+    //   写成「通胀数据读数变化」，与事件（政策措辞变化）对不上
+    { key: "rate_decision", w: 4, re: /议息|利率决议|FOMC|点阵图|纪要|前瞻指引|经济预测|记者会|主席记者|政策声明|声明全文|会议声明|政策报告/ },
+    { key: "rate", w: 3, re: /加息|降息|按兵不动|维持利率|利率不变|不加息|暂缓加息|利率区间|利率路径|利率决定|货币政策|利率预期/ },
+    { key: "inflation", w: 3, re: /CPI|PCE|PPI|通胀|物价|核心通胀/ },
+    { key: "labor", w: 3, re: /非农|失业率|就业|薪资|薪酬/ },
+    { key: "growth", w: 3, re: /GDP|PMI|社融|零售|工业增加值|经济增长/ },
+    { key: "yield", w: 2, re: /收益率|国债|美债/ },
+    { key: "dollar", w: 2, re: /美元指数|美元走强|美元走弱|美元上涨|美元下跌|美元兑|美元汇率|强美元|弱美元|美元升值|美元贬值|美元新高|美元大跌|美元大涨/ },
+    { key: "positioning", w: 2, re: /库存|持仓|COMEX|ETF|资金流/ },
+    { key: "supply", w: 2, re: /产量|矿产|矿端|供给|供应|冶炼/ },
+    { key: "price", w: 1, re: /金价|银价|黄金|白银|贵金属/ },
+  ];
+
+  /* ---------- 铜（工业金属）机制定义 ---------- */
+  var COPPER_MECHS = [
+    { key: "cu_supply", w: 4, re: /罢工|停产|减产|产量|供给|供应|冶炼|矿端|铜矿|产能|指引|guidance/i },
+    { key: "cu_inventory", w: 4, re: /库存|仓单|保税|LME|SHFE|沪期所|持仓|升贴水|交割/ },
+    { key: "cu_demand", w: 4, re: /电网|电缆|新能源|光伏|风电|基建|房地产|制造业|需求|订单|消费/ },
+    { key: "cu_rule", w: 3, re: /保证金|涨跌停|限仓|手续费|合约修改|挂牌|规则|合约/ },
+    { key: "cu_trade", w: 3, re: /关税|贸易战|出口管制|贸易摩擦|贸易/ },
+    { key: "cu_macro", w: 2, re: /中国|衰退|放缓|GDP|PMI|宏观|增长/ },
+    { key: "cu_dollar", w: 2, re: /美元指数|美元走强|美元走弱|美元上涨|美元下跌|美元兑|美元汇率|强美元|弱美元|美元升值|美元贬值/ },
+    { key: "cu_price", w: 1, re: /铜价|沪铜|伦铜|LME铜|铜主力/ },
+  ];
+
+  /* ---------- 贵金属：机制句（事实性传导，不写资产方向，方向由 dir 决定） ---------- */
+  // 利率语气：先剥掉否定式，再判鹰/鸽/按兵不动
+  //   坑：「维持利率不变（不加息）」「暂缓加息」都含子串「加息」→ 直接判鹰会得到
+  //   「美联储释放加息信号」这种与事实相反的结论（C22 曾踩过同坑）。
+  var HOLD_MARK = "HOLD";
+  function rateTone(fact) {
+    var s = String(fact || "");
+    s = s.replace(/不加息|暂缓加息|暂停加息|推迟加息|延后加息|暂不加息|未加息|放弃加息|停止加息|不会加息|不降息|暂缓降息|暂停降息|不调整利率/g, HOLD_MARK);
+    if (/降息|鸽派|转鸽|宽松/.test(s)) return "dovish";
+    if (/加息|鹰派|转鹰|收紧|紧缩/.test(s)) return "hawkish";
+    if (s.indexOf(HOLD_MARK) >= 0 || /按兵不动|维持|不变/.test(s)) return "hold";
+    return "other";
+  }
+  // 「主要央行」是 cbSubject 的通用兜底 → 不算具体主体，结论里不点名央行
+  function cbOf(src) {
+    var c = cbSubject(src);
+    return c === "央行" ? "" : c;
+  }
+  function preciousClause(key, ctx) {
+    var IND = ctx.ind, NUM = ctx.num, SUR = ctx.sur, CB = ctx.cb, F = ctx.fact;
+    switch (key) {
+      case "inflation":
+        if (SUR === "hot") return IND + (NUM ? NUM + "高于预期，" : "超预期，") + "通胀预期与实际利率路径同步上修";
+        if (SUR === "cold") return IND + (NUM ? NUM + "低于预期，" : "回落，") + "通胀预期降温、降息定价升温";
+        if (SUR === "flat") return IND + (NUM ? NUM + "符合预期，" : "符合预期，") + "通胀路径缺少增量信息";
+        // 没有「预期值」可对比时，至少把实际读数写进去（3.1% 与 3.6% 不该是同一句）
+        return IND + (NUM ? "读数" + NUM : "读数变化") + "，通胀预期与实际利率路径随之重估";
+      case "rate":
+        var tone = ctx.tone;
+        if (tone === "hawkish") return (CB ? CB : "主要央行") + "释放加息信号，实际利率上行预期升温";
+        if (tone === "dovish") return (CB ? CB : "主要央行") + "释放降息信号，实际利率下行预期升温";
+        if (tone === "hold") return (CB ? CB : "主要央行") + "按兵不动，利率路径重定价放大波动";
+        return (CB ? CB : "主要央行") + "利率路径预期被修正，利率定价随之调整";
+      case "rate_decision":
+        return (CB ? CB : "主要央行") + "政策声明与利率路径指引更新，前瞻预期被重新定价";
+      case "labor":
+        if (SUR === "hot") return IND + (NUM ? NUM + "显示劳动力市场韧性，" : "显示劳动力市场韧性，") + "降息定价降温";
+        if (SUR === "cold") return IND + (NUM ? NUM + "显示劳动力市场走弱，" : "显示劳动力市场走弱，") + "降息定价升温";
+        if (SUR === "flat") return IND + (NUM ? NUM + "符合预期，" : "符合预期，") + "就业对政策的指示意义中性";
+        return IND + (NUM ? "读数" + NUM : "读数变化") + "，就业对政策的指示意义待确认";
+      case "growth":
+        if (SUR === "hot") return IND + (NUM ? NUM + "显示增长韧性，" : "显示增长韧性，") + "利率高位维持预期升温";
+        if (SUR === "cold") return IND + (NUM ? NUM + "显示增长走软，" : "显示增长走软，") + "降息与衰退定价升温";
+        if (SUR === "flat") return IND + (NUM ? NUM + "符合预期，" : "符合预期，") + "增长对定价的指示意义中性";
+        return IND + (NUM ? "读数" + NUM : "读数变化") + "，增长对定价的指示意义待确认";
+      case "dollar":
+        if (/美元走强|美元上涨|美元指数.{0,4}(升|涨|新高)/.test(F)) return "美元走强，直接改写以美元计价的商品定价锚";
+        if (/美元走弱|美元下跌|美元指数.{0,4}(跌|降)/.test(F)) return "美元走弱，直接改写以美元计价的商品定价锚";
+        return "美元走势直接改写以美元计价的商品定价锚";
+      case "yield":
+        if (/收益率.{0,6}(上行|走高|攀升|飙升|冲高)/.test(F)) return "美债收益率上行，抬高持有贵金属的机会成本";
+        if (/收益率.{0,6}(下行|走低|回落)/.test(F)) return "美债收益率下行，降低持有贵金属的机会成本";
+        return "美债收益率变动，直接改写持有贵金属的机会成本";
+      case "safehaven":
+        // 停火 / 和谈 / 缓和 → 风险溢价回吐（利空）；冲突升级 → 避险买盘（利多）
+        if (/停火|和谈|缓和|降级|撤军|协议|降温|回吐/.test(F)) return "地缘风险溢价回吐，避险配置需求随之降温";
+        if (/升级|爆发|开战|空袭|袭击|冲突|战争|制裁|紧张/.test(F)) return "地缘与冲突风险溢价重新定价，避险配置需求随之升温";
+        return "地缘与冲突风险溢价重新定价，避险配置需求随之波动";
+      case "centralbuy": return "官方购金与储备需求构成贵金属的结构性买盘";
+      case "trade": return "关税与贸易成本同时作用于通胀路径与避险需求";
+      case "fiscal": return "财政赤字与债务供给压力作用于通胀预期与期限溢价";
+      case "positioning": return "交易所库存与持仓结构反映交割压力与配置节奏";
+      case "supply": return "矿产供给扰动的定价解释力弱于实际利率";
+      case "price": return ctx.asset + "自身价格波动与基本面存在背离，短线以技术面为主";
+    }
+    return "";
+  }
+
+  /* ---------- 铜：机制句 ---------- */
+  function copperClause(key, ctx) {
+    var IND = ctx.ind, NUM = ctx.num, SUR = ctx.sur, F = ctx.fact;
+    switch (key) {
+      case "cu_supply":
+        if (/(产量|产铜|产出|供应量|供给量|产能|指引|guidance)[^。；]{0,20}(增长|增加|提升|上调|上修|扩产|放量|创新高|增加至|超预期)/.test(F)
+          || /(增长|增加|提升|上调|上修|扩产|放量|创新高)[^。；]{0,16}(产量|产铜|产能|供给|供应|指引)/.test(F)) return "铜矿产量与冶炼供给放量预期升温，供给端转向宽松";
+        if (/(产量|产铜|产出|供应量|供给量|产能)[^。；]{0,20}(下降|减少|下滑|下修|下调|削减|收缩|低于预期)/.test(F)
+          || /(下降|下滑|下修|下调|削减|收缩|减产|停产|罢工|扰动|事故)/.test(F)) return "铜矿减产与供应扰动增多，供给端收紧预期升温";
+        // 【C32-bugfix】兜底按事件类型细分：「口岸通关受阻」与「产量指引调整」不该共用一句话
+        if (/口岸|通关|运输|物流|到货|发运|装船|港口|铁路|卡车/.test(F)) return "矿端通关与运输环节受阻，冶炼厂短期到货偏紧";
+        if (/罢工|停产|事故|检修|塌方|不可抗力|关停/.test(F)) return "矿山生产扰动，供给收缩预期升温";
+        if (/冶炼|加工费|TC|RC|粗炼|精炼|开工率/.test(F)) return "冶炼端加工费与开工率变化，供给弹性受限";
+        if (/出口禁令|出口限制|关税|配额|禁令/.test(F)) return "资源出口政策收紧，铜精矿可流通量受限";
+        if (/产量|产铜|产出|产能|指引|guidance/i.test(F)) return "铜企产量指引区间调整，供给预期变化主导铜价";
+        return "铜精矿供应端出现新变化，供给预期重新定价";
+      case "cu_inventory":
+        if (/库存|持仓/.test(F) && /(上升|增加|回补|累积|走高)/.test(F)) return "交易所库存累积，铜价上行承压";
+        if (/库存|持仓/.test(F) && /(下降|减少|去化|回落|走低)/.test(F)) return "交易所库存去化，铜价支撑增强";
+        return "交易所库存与保税仓单变化，反映铜市供需松紧与区域价差";
+      case "cu_demand": return "电网、新能源与制造业需求预期变化，主导铜价方向";
+      case "cu_rule": return "交易所交割与规则调整，改变铜的现货供需与区域价差";
+      case "cu_trade": return "关税与贸易摩擦直接抬升或压制铜价";
+      case "cu_macro": return "中国需求与全球增长预期变化，主导铜价方向";
+      case "cu_dollar":
+        if (/美元走强|美元上涨/.test(F)) return "美元走强，直接改写以美元计价的铜价锚";
+        if (/美元走弱|美元下跌/.test(F)) return "美元走弱，直接改写以美元计价的铜价锚";
+        return "美元走势直接改写以美元计价的铜价锚";
+      case "cu_price": return "铜价自身波动与基本面存在背离，短线以技术面为主";
+    }
+    return "";
+  }
+
+  /**
+   * 机制隐含的价格方向（用于消解「机制句与方向句自相矛盾」）。
+   *   机制方向确定 → 用机制方向（比关键词分类器更具体）；
+   *   机制方向与 dir 冲突 → 明说「分歧」，绝不写出「加息信号 + 金价获支撑」这种自相矛盾句。
+   */
+  function mechDir(key, ctx) {
+    var F = ctx.fact;
+    switch (key) {
+      case "rate":
+        if (ctx.tone === "hawkish") return "down";
+        if (ctx.tone === "dovish") return "up";
+        return "";
+      case "inflation":
+        if (ctx.sur === "hot") return "down";
+        if (ctx.sur === "cold") return "up";
+        return "";
+      case "labor":
+        if (ctx.sur === "hot") return "down";
+        if (ctx.sur === "cold") return "up";
+        return "";
+      case "growth":
+        if (ctx.sur === "hot") return "down";
+        if (ctx.sur === "cold") return "up";
+        return "";
+      case "dollar":
+        if (/美元走强|美元上涨/.test(F)) return "down";
+        if (/美元走弱|美元下跌/.test(F)) return "up";
+        return "";
+      case "yield":
+        if (/收益率.{0,6}(上行|走高|攀升|飙升|冲高)/.test(F)) return "down";
+        if (/收益率.{0,6}(下行|走低|回落)/.test(F)) return "up";
+        return "";
+      case "safehaven":
+        // 停火/缓和 → 风险溢价回吐（利空）；冲突升级 → 避险买盘（利多）
+        if (/停火|和谈|缓和|降级|撤军|协议|降温|回吐/.test(F)) return "down";
+        if (/升级|爆发|开战|空袭|袭击|冲突|战争|制裁|紧张/.test(F)) return "up";
+        return "";
+      case "centralbuy": return "up";
+      case "cu_supply":
+        if (/(产量|产铜|产出|供应量|供给量|产能|指引|guidance)[^。；]{0,20}(增长|增加|提升|上调|上修|扩产|放量|创新高|增加至|超预期)/.test(F)
+          || /(增长|增加|提升|上调|上修|扩产|放量|创新高)[^。；]{0,16}(产量|产铜|产能|供给|供应|指引)/.test(F)) return "down";
+        if (/(产量|产铜|产出|供应量|供给量|产能)[^。；]{0,20}(下降|减少|下滑|下修|下调|削减|收缩|低于预期)/.test(F)
+          || /(下降|下滑|下修|下调|削减|收缩|减产|停产|罢工|扰动|事故)/.test(F)) return "up";
+        return "";
+      case "cu_inventory":
+        if (/(库存|持仓).{0,12}(上升|增加|回补|累积|走高)/.test(F)) return "down";
+        if (/(库存|持仓).{0,12}(下降|减少|去化|回落|走低)/.test(F)) return "up";
+        return "";
+    }
+    return "";
+  }
+
+  /* ---------- 验证锚点：下一步该看什么 ---------- */
+  var PRECIOUS_ANCHOR = {
+    inflation: "关注下月通胀数据与美联储表态",
+    rate: "关注12月议息与点阵图",
+    rate_decision: "关注点阵图与主席记者会措辞",
+    labor: "关注下月非农与失业率",
+    growth: "关注下月GDP与PMI初值",
+    yield: "关注10年期美债收益率关键位",
+    dollar: "关注美元指数与美债收益率是否同向",
+    safehaven: "关注冲突进展与避险资金流向",
+    centralbuy: "关注各国央行月度购金与ETF持仓",
+    trade: "关注关税落地节奏与谈判进展",
+    fiscal: "关注财政赤字与国债发行计划",
+    positioning: "关注COMEX库存与ETF净流入",
+    supply: "关注矿产产量与进口数据",
+    price: "关注基本面与价格的背离能否收敛",
+  };
+  var COPPER_ANCHOR = {
+    cu_supply: "关注矿端扰动持续性与冶炼开工率",
+    cu_inventory: "关注LME与保税区库存、现货升贴水",
+    cu_demand: "关注电网与新能源订单落地节奏",
+    cu_rule: "关注交易所交割与保证金规则调整",
+    cu_trade: "关注关税落地节奏与铜材出口表现",
+    cu_macro: "关注中国开工率、社融与海外PMI",
+    cu_dollar: "关注美元指数与人民币汇率",
+    cu_price: "关注基本面与价格的背离能否收敛",
+  };
+
+  /* ---------- 中性/待定时的「取决于什么」：比「方向待确认」有信息量，且随机制变化 ---------- */
+  var PRECIOUS_MIXED = {
+    inflation: "通胀数据是否超预期",
+    rate: "美联储下一步政策指引",
+    rate_decision: "点阵图与记者会措辞",
+    labor: "非农与失业率",
+    growth: "GDP与PMI初值",
+    yield: "10年期美债收益率",
+    dollar: "美元指数方向",
+    safehaven: "冲突进展与谈判信号",
+    centralbuy: "央行购金节奏",
+    trade: "关税落地节奏",
+    fiscal: "财政赤字与国债发行计划",
+    positioning: "COMEX库存与ETF资金流向",
+    supply: "矿产产量与进口数据",
+    price: "基本面与价格的背离能否收敛",
+  };
+  var COPPER_MIXED = {
+    cu_supply: "矿端扰动持续性与冶炼开工率",
+    cu_inventory: "LME与保税区库存、现货升贴水",
+    cu_demand: "电网与新能源订单落地节奏",
+    cu_rule: "交易所交割与保证金规则调整",
+    cu_trade: "关税落地节奏与铜材出口表现",
+    cu_macro: "中国开工率、社融与海外PMI",
+    cu_dollar: "美元指数与人民币汇率",
+    cu_price: "基本面与价格的背离能否收敛",
+  };
+
+  /**
+   * 【C32】影响结论：自然语言，1–2 句，点名机制 + 资产 + 方向 + 下一步看什么。
+   * @param {String} metal gold / silver / copper
+   * @param {String} fact  事实标题（zhTitle 结果）
+   * @param {String} dir   up / down / mixed
+   * @param {String} alt   备选文本（正文/描述）
+   * @returns {String}
+   */
+  function conclude(metal, fact, dir, alt) {
+    var isCu = metal === "copper";
+    var isAg = metal === "silver";
+    var m = isCu ? "copper" : "metal";
+    var f = String(fact || "");
+    var a = String(alt || "");
+    var src = f + " " + a;
+    var defs = isCu ? COPPER_MECHS : PRECIOUS_MECHS;
+    var anchorMap = isCu ? COPPER_ANCHOR : PRECIOUS_ANCHOR;
+
+    // 资产称谓 —— 严格跟随「当前列表的品种」，不看事件自己提到谁。
+    //   【C32-bugfix】原实现有一条「金银混说」规则：银事件若正文里没提银价、只提金价 → 改称「金价」。
+    //   跨品种宏观事件（美联储/通胀/日银）正文几乎都是金价口径 → 银列表里满屏「金价短线承压」，
+    //   影响面也挂着「金价 / AU9999」（用户实拍反馈）。事件对哪个品种列表展示，结论就必须说哪个品种，
+    //   这才是三端语义自洽的口径；事件本身到底提到谁，交给「它被分到哪个桶」表达。
+    var asset = isCu ? "沪铜主连" : (isAg ? "银价" : "金价");
+
+    var ctx = {
+      fact: f, ind: indicatorOf(src), num: actualNumOf(src), sur: surpriseOf(src),
+      cb: cbOf(src), metal: m, tone: rateTone(src), asset: asset,
+    };
+
+    // 机制：取分数最高的 1~2 个（两个机制可叠加 → 更具体）
+    var sc = mechScores(src, defs);
+    var tops = topMechs(sc, defs, sc && Object.keys(sc).length > 1 ? 2 : 1);
+    var clauses = [];
+    for (var i = 0; i < tops.length; i++) {
+      var c = isCu ? copperClause(tops[i].key, ctx) : preciousClause(tops[i].key, ctx);
+      if (c) clauses.push(c);
+    }
+    if (!clauses.length) {
+      clauses.push(isCu ? "铜市供需与宏观预期变化，主导铜价方向" : "宏观变量变化，驱动实际利率与美元重新定价");
+    }
+
+    // 方向消解：机制方向确定时，机制方向优先（比关键词分类器更具体）；
+    //   机制与 dir 冲突 → 明说分歧，绝不写出「加息信号 + 金价获支撑」这种自相矛盾句。
+    var md = "";
+    for (var j = 0; j < tops.length; j++) {
+      md = mechDir(tops[j].key, ctx);
+      if (md) break;
+    }
+    var effDir = dir;
+    var conflicted = false;
+    if (md) {
+      if (dir === "mixed") effDir = md;
+      else if (dir !== md) { effDir = "mixed"; conflicted = true; }
+    }
+    var mixedMap = isCu ? COPPER_MIXED : PRECIOUS_MIXED;
+    var dirTxt = conflicted
+      ? (asset + "方向存分歧，机制信号与价格表现背离")
+      : effDir === "up" ? asset + "短线获支撑"
+      : effDir === "down" ? asset + "短线承压"
+      : asset + "方向取决于" + (mixedMap[tops[0] ? tops[0].key : ""] || "后续数据验证");
+
+    // 组句：机制句 + 资产方向句(+验证锚点)
+    //   【C32-bugfix】同一句里不许把同一件事说两遍（实拍：「…主导铜价方向，沪铜主连方向取决于LME与保税区库存，
+    //   关注LME与保税区库存…」三连重复；「…银价方向取决于通胀数据，关注下月通胀数据…」）。
+    //   两条去重规则：① 机制句已给方向 → 方向句降级为「幅度与节奏」；② 锚点文字已在句中 → 不再追加。
+    var outC = clauses.join("，");
+    var tailTxt = dirTxt;
+    if (/(主导|决定)[^，。]{0,6}方向/.test(outC) && dirTxt.indexOf("方向取决于") >= 0) {
+      tailTxt = "幅度与节奏取决于后续数据";
+    }
+    var out = outC + "，" + tailTxt;
+    var anchor = anchorMap[tops[0] ? tops[0].key : ""];
+    if (anchor && clauses.length) {
+      var aKey = String(anchor).replace(/^关注/, "");
+      var aTokens = aKey.split(/[与、和]/).filter(function (x) { return x.length >= 2; });
+      var dupHit = aTokens.some(function (t) { return out.indexOf(t) >= 0; });
+      if (!dupHit) out += "，" + anchor;
+    }
+
+    // 质量门禁：过短 → 退回「机制+资产」兜底句
+    if (out.length < 12) {
+      out = clauses.join("，") + "，" + dirTxt;
+    }
+    // eff：机制修正后的有效方向，与结论正文同源 —— 徽章与正文必须说同一件事
+    //   （实测 22 条「徽章中性 / 结论承压」互相打脸，就是两处各算一套方向的后果）
+    return { txt: out, eff: conflicted ? "mixed" : (effDir || dir || "mixed") };
+  }
+
+  /** 影响结论正文（三端渲染用） */
+  function impactConclusion(metal, fact, dir, alt) {
+    return conclude(metal, fact, dir, alt).txt;
+  }
+  /** 机制修正后的有效方向（徽章用）：up / down / mixed，与结论正文严格同源 */
+  function impactEffDir(metal, fact, dir, alt) {
+    return conclude(metal, fact, dir, alt).eff;
+  }
+
   /* ================= C. 国内源解析 + 噪声门禁 ================= */
 
   // 国内快讯：贵金属 / 顶层宏观关键词（比境外源的关键词更严，避免噪声淹没）
@@ -777,6 +1265,10 @@
     zhFactDetail: zhFactDetail,
     zhGistReadable: zhGistReadable,
     zhImpact: zhImpact,
+    impactScope: impactScope,
+    impactDegree: impactDegree,
+    impactConclusion: impactConclusion,
+    impactEffDir: impactEffDir,
     cleanCnHeadline: cleanCnHeadline,
     cnRelevant: cnRelevant,
     parseEastmoney: parseEastmoney,
