@@ -574,27 +574,50 @@
     var pageItems = list.slice(startIdx, startIdx + PAGE_SIZE);
 
     var ul = document.getElementById("eventList");
+    // 【C31】标题「查看全部」展开：委托监听只绑定一次（innerHTML 重渲染不重复绑定）
+    if (!ul.__evTitleWired) {
+      ul.addEventListener("click", function (ev) {
+        var more = ev.target && ev.target.closest ? ev.target.closest(".ei-more") : null;
+        if (more) {
+          var wrap = more.closest(".ei-title-wrap");
+          if (wrap) wrap.classList.toggle("expanded");
+        }
+      });
+      ul.__evTitleWired = true;
+    }
     ul.innerHTML = pageItems.map(function (e) {
       var impCls = e.impact === "up" ? "impact-up" : e.impact === "down" ? "impact-down" : "impact-mixed";
       var impTxt = e.impact === "up" ? "利多" : e.impact === "down" ? "利空" : "中性";
       var href = e.url ? String(e.url).replace(/&/g, "&amp;").replace(/"/g, "&quot;") : "";
-      // 标签与小程序端统一：滤掉方向性废话（走强/走弱，多空导向胶囊已表达），最多 6 个
-      var tagsHtml = (e.tags || []).filter(function (t) { return t !== "走强" && t !== "走弱"; }).slice(0, 6)
-        .map(function (t) { return "<span class='ei-tag'>" + esc(t) + "</span>"; }).join("");
       var origHtml = href
         ? "<a class='ei-link' href='" + href + "' target='_blank' rel='noopener' title='" + esc(e.origTitle || "") + "'>查看原文 ↗</a>"
         : "";
-      // 信息层级（三端统一）：标题 → 元信息行（日期/分类/导向/相关性）→ 标签 → 摘要 → 依据 → 来源
+      // 标签与小程序端统一：滤掉方向性废话（走强/走弱，多空导向胶囊已表达），最多 6 个
+      var evTags = (e.tags || []).filter(function (t) { return t !== "走强" && t !== "走弱"; }).slice(0, 6)
+        .map(function (t) { return "<span class='ei-tag'>" + esc(t) + "</span>"; }).join("");
+      var sc = (e.impactScope || []).slice(0, 5)
+        .map(function (x) { return "<span class='ei-itag scope'>" + esc(x) + "</span>"; }).join("");
+      var deg = e.impactDegree ? "<span class='ei-itag degree'>" + esc(e.impactDegree) + "</span>" : "";
+      // 信息层级（三端统一）：标题 → 元信息行 → 事件(含事件小标签) / 影响(含影响面·程度小标签) → 依据 → 来源
       return "<li class='event-item'>" +
-        "<div class='ei-title'>" + esc(e.title) + "</div>" +
-        "<div class='ei-top'>" +
-        "<span class='ei-date'>" + e.date + "</span>" +
-        "<span class='ei-cat'>" + e.category + "</span>" +
-        "<span class='ei-impact " + impCls + "'>" + impTxt + "</span>" +
-        corrBadge(e) +
+        "<div class='ei-title-wrap'>" +
+          "<div class='ei-title" + (e.title.length > 22 ? " clamp" : "") + "'>" + esc(e.title) + "</div>" +
+          (e.title.length > 22 ? "<span class='ei-more'>查看全部 ›</span>" : "") +
         "</div>" +
-        (tagsHtml ? "<div class='ei-tags'>" + tagsHtml + "</div>" : "") +
-        (function () { var sp = splitSummary(e.summary); return "<div class='ei-summary'>" + esc(sp.event) + (sp.impact ? "<div class='ei-impact-line'>" + esc(sp.impact) + "</div>" : "") + "</div>"; })() +
+        "<div class='ei-top'>" +
+          "<span class='ei-date'>" + e.date + "</span>" +
+          "<span class='ei-cat'>" + e.category + "</span>" +
+          "<span class='ei-impact " + impCls + "'>" + impTxt + "</span>" +
+          corrBadge(e) +
+        "</div>" +
+        (function () {
+          var sp = splitSummary(e.summary);
+          var html = "<div class='ei-summary'>";
+          if (sp.event) html += "<div class='ei-part'><span class='ei-label'>事件</span><span class='ei-text'>" + esc(sp.event) + "</span>" + (evTags ? "<div class='ei-stags'>" + evTags + "</div>" : "") + "</div>";
+          if (sp.impact) html += "<div class='ei-part impact-line'><span class='ei-label impact'>影响</span><span class='ei-text'>" + esc(sp.impact) + "</span>" + ((sc || deg) ? "<div class='ei-itags'>" + sc + deg + "</div>" : "") + "</div>";
+          html += "</div>";
+          return html;
+        })() +
         corrBasis(e) +
         "<div class='ei-source'>来源：" + esc(e.source) + (e.auto ? " ｜ AI 归纳" : "") + origHtml + "</div>" +
         "</li>";

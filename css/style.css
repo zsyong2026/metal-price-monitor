@@ -226,7 +226,15 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 }
 /* 卡片信息层级（三端统一，突出重点）：
    标题（最大字号）→ 元信息行（日期/分类/导向/相关性）→ 标签 → 摘要 → 依据行 → 来源 */
-.event-item .ei-title { font-size: 15px; font-weight: 600; margin: 0 0 8px; line-height: 1.45; }
+/* 【C31】标题与「查看全部」同处一行：标题截断省略号、按钮末尾内联，不各占一行；移动端同理 */
+.event-item .ei-title-wrap { display: flex; align-items: baseline; margin: 0 0 8px; }
+.event-item .ei-title { font-size: 15px; font-weight: 600; line-height: 1.45; margin: 0; }
+.event-item .ei-title-wrap .ei-title { flex: 1 1 auto; min-width: 0; }
+.event-item .ei-title.clamp { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.event-item .ei-more { flex: 0 0 auto; margin-left: 8px; color: var(--gold-deep); font-size: 12px; cursor: pointer; white-space: nowrap; }
+.event-item .ei-title-wrap.expanded { display: block; }
+.event-item .ei-title-wrap.expanded .ei-title { white-space: normal; }
+.event-item .ei-title-wrap.expanded .ei-more { display: inline-block; margin: 4px 0 0; }
 .event-item .ei-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 8px; }
 .event-item .ei-date { font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; flex-shrink: 0; }
 
@@ -253,6 +261,14 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 .event-item .ei-summary { font-size: 13px; color: var(--ink-soft); line-height: 1.6; margin: 0 0 8px; }
 /* 【C29】影响结论独立成行（与小程序端一致），金色左栏强调，去掉 web 端冗余的「对X影响：」前缀 */
 .event-item .ei-impact-line { font-size: 13px; color: var(--gold-deep); line-height: 1.6; margin: 0 0 8px; padding-left: 10px; border-left: 2px solid rgba(212,160,23,.4); }
+/* 【C31】事件 / 影响 段内小标签（事件关键词 + 影响面 · 程度）明确贴内容展示 */
+.event-item .ei-part { margin: 0 0 6px; }
+.event-item .ei-part .ei-text { display: inline; }
+.event-item .ei-part.impact-line { padding-left: 10px; border-left: 2px solid rgba(212,160,23,.4); }
+.event-item .ei-stags, .event-item .ei-itags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.event-item .ei-itag { display: inline-flex; align-items: center; height: 20px; padding: 0 9px; border-radius: 999px; font-size: 11px; line-height: 1; white-space: nowrap; }
+.event-item .ei-itag.scope { background: rgba(212,160,23,.16); color: var(--gold-deep); }
+.event-item .ei-itag.degree { background: rgba(15,157,88,.14); color: #0b7a43; font-weight: 700; }
 .event-item .ei-source { font-size: 11px; color: var(--ink-soft); opacity: .85; margin: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ei-link { color: var(--gold-deep); text-decoration: none; font-weight: 600; }
 .ei-link:hover { text-decoration: underline; }
@@ -363,7 +379,7 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 @media (min-width: 1025px) {
   .event-list { gap: 16px; }
   .event-item { padding: 22px 26px; border-radius: 12px; }
-  .event-item .ei-title { font-size: 17px; margin: 0 0 12px; }
+  .event-item .ei-title { font-size: 17px; }
   .event-item .ei-top { gap: 8px; margin: 0 0 12px; }
   .event-item .ei-cat, .event-item .ei-impact, .event-item .ei-corr, .event-item .ei-tag {
     height: 24px; padding: 0 12px; font-size: 12px;
