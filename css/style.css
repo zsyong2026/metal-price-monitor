@@ -233,7 +233,8 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 /* Events */
 /* 事件头：标题与筛选组靠左相邻，更新时间提示级小字推到行末右对齐（margin-left:auto）；
    窄屏折行时时间行仍靠右，不横在中间 */
-/* 事件区容器：720px 可读行宽上限并居中（≠整页 1180px 容器），列表始终单列 */
+/* 事件区容器：与上方价格图同宽（整页 1180px 容器内满宽），不再限 720px 居中——
+   之前限宽导致事件区两侧出现与图表不等宽的留白，已按反馈取消（C32 后续） */
 .events { max-width: none; }
 .events-head { display: flex; align-items: center; justify-content: flex-start; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
 .events-head h2 { font-size: 17px; margin: 0; }
@@ -246,8 +247,9 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
   margin-left: auto; font-size: 10px; color: var(--ink-soft);
   letter-spacing: .2px; line-height: 1.4; white-space: nowrap;
 }
-/* 事件列表容器：始终单列 + 720px 可读行宽上限（EVENT_LIST_REDESIGN §(e)）
-   ——卡片拉满 1180px 时正文一行 90+ 字读起来累，限宽后一行约 45 字。 */
+/* 事件列表容器：始终单列，宽度与上方价格图一致（整页容器内满宽）。
+   ——原计划按 EVENT_LIST_REDESIGN §(e) 限 720px 居中提升可读性，但导致事件区与图表不等宽、
+   两侧出现留白，已取消（C32 后续）。事件卡片正文为短句，满宽下可读性可接受。 */
 .events { max-width: none; }
 .event-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .event-item {
