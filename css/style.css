@@ -234,7 +234,7 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 /* 事件头：标题与筛选组靠左相邻，更新时间提示级小字推到行末右对齐（margin-left:auto）；
    窄屏折行时时间行仍靠右，不横在中间 */
 /* 事件区容器：720px 可读行宽上限并居中（≠整页 1180px 容器），列表始终单列 */
-.events { max-width: 720px; margin-left: auto; margin-right: auto; }
+.events { max-width: none; }
 .events-head { display: flex; align-items: center; justify-content: flex-start; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
 .events-head h2 { font-size: 17px; margin: 0; }
 .events-filter { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -248,7 +248,7 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 }
 /* 事件列表容器：始终单列 + 720px 可读行宽上限（EVENT_LIST_REDESIGN §(e)）
    ——卡片拉满 1180px 时正文一行 90+ 字读起来累，限宽后一行约 45 字。 */
-.events { max-width: 720px; margin-left: auto; margin-right: auto; }
+.events { max-width: none; }
 .event-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .event-item {
   background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--brand);
