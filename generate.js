@@ -220,6 +220,9 @@ const WIN_START = Date.UTC(2021, 0, 1); // 图表窗口：近 5 年
 //   作用：① 东财不可达时接管国内价，保证持续新鲜；② 与东财做双源交叉校验（超阈值拒绝发布）。
 const SINA_INNER_SYM = { gold: "AU0", silver: "AG0", copper: "CU0" };
 const SINA_INNER_SCALE = { gold: 1, silver: 0.001, copper: 1 }; // 白银 元/千克 -> 元/克（与序列口径一致）
+// 新浪 T+D 现货（上海黄金交易所现货延期）：[0]=最新价 [12]=日期。与期货主连属不同品种的独立报价，
+// 用于平台（东财不可达）场景下仍能做「现货 vs 期货」交叉校验，抓串档/错源。
+const TD_SYM = { gold: "gds_AUTD", silver: "gds_AGTD" };
 const CROSS_TOL = 0.02; // 双源交叉校验容差 2%（国内现货 vs 期货主连存在基差，2% 内视为一致）
 
 async function fetchSinaDaily(sym) {
@@ -321,6 +324,24 @@ function mergeSpotDay(series, spot, scale) {
   return { series, merged: true };
 }
 
+// 新浪 T+D 现货行情（hq.sinajs.cn）：[0]=最新价 [6]=时间 [12]=日期
+async function fetchSinaTdSpot(metal) {
+  const sym = TD_SYM[metal];
+  if (!sym) return null;
+  const url = "https://hq.sinajs.cn/list=" + sym;
+  const r = await fetch(url, {
+    headers: { "User-Agent": "Mozilla/5.0", Referer: "https://finance.sina.com.cn" },
+    signal: AbortSignal.timeout(15000),
+  });
+  const txt = await r.text();
+  const m = txt.match(/="([^"]*)"/);
+  if (!m || !m[1]) return null;
+  const f = m[1].split(",");
+  const price = parseFloat(f[0]);
+  if (!isFinite(price) || price <= 0) return null;
+  return { price, date: (f[12] || "").slice(0, 10), time: f[6] || "" };
+}
+
 // 双源交叉校验：取两序列「共有日期」中最新的一天，比对数值偏差
 function crossCheck(a, b) {
   if (!a || !a.length || !b || !b.length) return { ok: true, skipped: true };
@@ -384,6 +405,18 @@ async function fetchRealSeries(metal, rates) {
       D = mm.series;
       if (mm.merged) dSource = "sinaInner+spot";
       else if (mm.rejected) dNote = mm.rejected;
+      // 交叉校验（东财不可达时）：沪金/沪银期货主连实时 vs T+D 现货实时（不同品种独立报价）
+      const td = await fetchSinaTdSpot(metal).catch(() => null);
+      if (td) {
+        const a = round2(spotIn.price * isc), b = round2(td.price * isc);
+        const dev = Math.abs(a / b - 1);
+        dCross = {
+          ok: dev <= CROSS_TOL, skipped: false, src: "td-vs-inner",
+          date: td.date || new Date(spotIn.tradeMs).toISOString().slice(0, 10),
+          dev: Math.round(dev * 10000) / 10000, a, b,
+        };
+        if (!dCross.ok) dNote = "T+D 现货 vs 期货主连偏差 " + (dev * 100).toFixed(2) + "%";
+      }
     }
   } else {
     const pages = await fetchFromPages(metal).catch(() => null);
