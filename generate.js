@@ -213,6 +213,15 @@ const EM_SECID = { gold: "118.AU9999", silver: "118.AGTD", copper: "113.cum" };
 const EM_SCALE = { gold: 1, silver: 0.001, copper: 1 }; // 折到序列单位（白银 元/千克 -> 元/克）
 const WIN_START = Date.UTC(2021, 0, 1); // 图表窗口：近 5 年
 
+// ---------- 【C36 多源】新浪内盘期货主连（国内真实价第二源 + 交叉校验） ----------
+// 背景：平台沙箱实测 push2his.eastmoney.com 被墙 → 国内价只能回退旧值（滞后）。
+//   新浪内盘主连日K（stock.finance.sina.com.cn，已证实平台可达）提供真实国内价：
+//   沪金主连 AU0（元/克，与 AU9999 同量纲）、沪银主连 AG0（元/千克）、沪铜主连 CU0（元/吨）。
+//   作用：① 东财不可达时接管国内价，保证持续新鲜；② 与东财做双源交叉校验（超阈值拒绝发布）。
+const SINA_INNER_SYM = { gold: "AU0", silver: "AG0", copper: "CU0" };
+const SINA_INNER_SCALE = { gold: 1, silver: 0.001, copper: 1 }; // 白银 元/千克 -> 元/克（与序列口径一致）
+const CROSS_TOL = 0.02; // 双源交叉校验容差 2%（国内现货 vs 期货主连存在基差，2% 内视为一致）
+
 async function fetchSinaDaily(sym) {
   const url = "https://stock.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/GlobalFuturesService.getGlobalFuturesDailyKLine?symbol=" + sym;
   const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(20000) });
@@ -251,36 +260,154 @@ async function fetchEMKline(secid, klt, lmt) {
   return out;
 }
 
-// 由国内真实收盘反推伦敦价（新浪不可用时的回退路径）
+// ---------- 【C36】新浪内盘期货主连日K + 实时行情 ----------
+// 新浪内盘期货日K：/InnerFuturesNewService.getDailyKLine?symbol=AU0
+async function fetchSinaInnerDaily(sym) {
+  const url = "https://stock.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/InnerFuturesNewService.getDailyKLine?symbol=" + sym;
+  const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(20000) });
+  const txt = await r.text();
+  const a = txt.indexOf("["), b = txt.lastIndexOf("]");
+  if (a < 0 || b <= a) throw new Error("sina inner parse fail " + sym);
+  const arr = JSON.parse(txt.slice(a, b + 1));
+  const out = [];
+  for (const k of arr) {
+    // 与东财口径一致：北京时间当日 → UTC 当日零点
+    const ms = Date.parse(k.d + "T00:00:00+08:00") + 28800000;
+    const v = parseFloat(k.c);
+    if (isFinite(ms) && isFinite(v) && v > 0) out.push([ms, v]);
+  }
+  if (out.length < 120) throw new Error("sina inner too few " + sym);
+  return out;
+}
+
+// 北京时间「期货交易日」：夜盘 21:00 起归属下一交易日；凌晨夜盘尾段归属前一日
+function bjTradeDate() {
+  const bj = new Date(Date.now() + 8 * 3600000);
+  const t = bj.getUTCHours() * 60 + bj.getUTCMinutes();
+  let d = Date.UTC(bj.getUTCFullYear(), bj.getUTCMonth(), bj.getUTCDate());
+  if (t >= 21 * 60) d += 86400000;      // 夜盘 → 下一交易日
+  else if (t < 9 * 60) d -= 86400000;  // 凌晨夜盘尾段 → 前一交易日
+  return d;
+}
+
+// 新浪内盘期货实时行情（hq.sinajs.cn）：[1]=时间HHMMSS [2]=昨收 [8]=最新价
+async function fetchSinaInnerSpot(sym) {
+  const url = "https://hq.sinajs.cn/list=nf_" + sym;
+  const r = await fetch(url, {
+    headers: { "User-Agent": "Mozilla/5.0", Referer: "https://finance.sina.com.cn" },
+    signal: AbortSignal.timeout(15000),
+  });
+  const txt = await r.text();
+  const m = txt.match(/="([^"]*)"/);
+  if (!m || !m[1]) return null;
+  const f = m[1].split(",");
+  const price = parseFloat(f[8]);
+  const prevClose = parseFloat(f[2]);
+  if (!isFinite(price) || price <= 0) return null;
+  return { price, prevClose: isFinite(prevClose) ? prevClose : null, tradeMs: bjTradeDate(), time: f[1] || "" };
+}
+
+// 用实时价补「当日」这根（东财不可达时，让国内价末日与伦敦对齐到今天）
+function mergeSpotDay(series, spot, scale) {
+  if (!spot || !series || !series.length) return { series, merged: false };
+  const val = round2(spot.price * scale);
+  const ms = spot.tradeMs;
+  const last = series[series.length - 1];
+  if (last[0] === ms) { series[series.length - 1] = [ms, val]; return { series, merged: true, replaced: true }; }
+  if (last[0] > ms) return { series, merged: false };
+  const dev = Math.abs(val / last[1] - 1);
+  if (dev > 0.05) return { series, merged: false, rejected: "实时价偏离日K末日 " + (dev * 100).toFixed(1) + "%" };
+  series.push([ms, val]);
+  return { series, merged: true };
+}
+
+// 双源交叉校验：取两序列「共有日期」中最新的一天，比对数值偏差
+function crossCheck(a, b) {
+  if (!a || !a.length || !b || !b.length) return { ok: true, skipped: true };
+  const mapB = new Map(b.map((p) => [p[0], p[1]]));
+  let best = null;
+  for (const p of a) if (mapB.has(p[0])) best = [p[0], p[1], mapB.get(p[0])];
+  if (!best) return { ok: true, skipped: true };
+  const dev = Math.abs(best[1] / best[2] - 1);
+  return {
+    ok: dev <= CROSS_TOL,
+    date: new Date(best[0]).toISOString().slice(0, 10),
+    dev: Math.round(dev * 10000) / 10000,
+    a: best[1], b: best[2],
+  };
+}
+
+// 由国内真实收盘反推伦敦价（新浪不可用时的回退路径）；与上方 back-calc 严格互逆
 function impliedLondon(domesticVal, usdcny, metal) {
-  if (metal === "copper") return (domesticVal - 500) / (usdcny * 1.13);
+  if (metal === "copper") return domesticVal / (usdcny * 1.06); // D = L_ton*cny*1.06 的互逆
   return domesticVal * OZ2G / usdcny - (metal === "gold" ? 15 : 0.6);
 }
 
-// 抓取某金属的真实序列：伦敦（新浪）+ 国内（东财）+ 香港（汇率折算）
+// 抓取某金属的真实序列：伦敦（新浪国际期货日K）+ 国内（东财真实日K）+ 香港（伦敦×真实汇率折算）
+// 数据源：伦敦=新浪（已与 gold-api 互证，准确）；国内=东财 AU9999/AGTD/沪铜主连（最准）
+// 【C35 准确性修正】国内价绝不反推！沪金相对国际金价存在 ~6% 折价基差，用「伦敦×汇率」反推国内价
+//   恒偏高（金：903 vs 真实 847）。所以国内价只来自真实源（东财）；东财不可达时回退到 GH Pages /
+//   磁盘上的「上一版真实国内价」（由 Actions/平台用东财生成并每 15 分钟刷新），保证平台东财被墙时
+//   国内价仍是真实值（可能滞后但准确），而非 6% 偏高的反推值。香港价由伦敦×汇率折算（HK 贴国际，基差小）。
 async function fetchRealSeries(metal, rates) {
-  const [sina, emD] = await Promise.all([
+  const [sina, emD, innerD] = await Promise.all([
     fetchSinaDaily(SINA_SYM[metal]).catch(() => null),
-    fetchEMKline(EM_SECID[metal], 101, 1600).catch(() => null),
+    // 【C36】应急开关：METALS_NO_EM=1 强制跳过东方财富（用于模拟源故障 / 应急切源）
+    (process.env.METALS_NO_EM ? Promise.resolve(null) : fetchEMKline(EM_SECID[metal], 101, 1600).catch(() => null)),
+    fetchSinaInnerDaily(SINA_INNER_SYM[metal]).catch(() => null),
   ]);
   const emOk = !!(emD && emD.length >= 120);
   const sinaOk = !!sina;
-  if (!emOk) return { ok: false, sinaOk, emOk }; // 国内真实数据是底线
+  const innerOk = !!(innerD && innerD.length >= 120);
   const sc = EM_SCALE[metal];
+  const isc = SINA_INNER_SCALE[metal];
   const from = WIN_START - 40 * 86400000;
-  const D = emD.filter((p) => p[0] >= from).map((p) => [p[0], round2(p[1] * sc)]);
+  // 国内序列：多源策略 —— 东财(现货, 最准) > 新浪内盘主连(第二源) > GH Pages 真实值 > 磁盘上一版真实值。
+  // 【C36】绝不反推（沪金相对国际金价有 ~6% 折价基差，反推必然偏高）；新浪内盘主连保证东财被墙时仍能刷新真实价。
+  let D = null, dSource = null, dCross = null, dNote = "";
+  if (emOk) {
+    D = emD.filter((p) => p[0] >= from).map((p) => [p[0], round2(p[1] * sc)]);
+    dSource = "eastmoney";
+    // 双源交叉校验：东财现货 vs 新浪内盘主连（取共有日期中最新的一天比对）
+    if (innerOk) {
+      const innerS = innerD.filter((p) => p[0] >= from).map((p) => [p[0], round2(p[1] * isc)]);
+      dCross = crossCheck(D, innerS);
+      if (!dCross.ok) dNote = "东财 vs 新浪内盘偏差 " + (dCross.dev * 100).toFixed(2) + "%";
+    }
+  } else if (innerOk) {
+    // 东财不可达（平台沙箱）→ 新浪内盘主连接管；再用实时价补「当日」这根
+    D = innerD.filter((p) => p[0] >= from).map((p) => [p[0], round2(p[1] * isc)]);
+    dSource = "sinaInner";
+    const spotIn = await fetchSinaInnerSpot(SINA_INNER_SYM[metal]).catch(() => null);
+    if (spotIn) {
+      const mm = mergeSpotDay(D, spotIn, isc);
+      D = mm.series;
+      if (mm.merged) dSource = "sinaInner+spot";
+      else if (mm.rejected) dNote = mm.rejected;
+    }
+  } else {
+    const pages = await fetchFromPages(metal).catch(() => null);
+    if (pages && pages.D && pages.D.length) { D = pages.D.filter((p) => p[0] >= from); dSource = "pages"; }
+    if (!D || !D.length) {
+      const disk = loadExistingReal(metal);
+      if (disk && disk.D && disk.D.length) { D = disk.D.filter((p) => p[0] >= from); dSource = "disk"; }
+    }
+  }
+  // 伦敦序列：优先新浪（准确）；新浪不可达时由国内真实收盘反推（极少路径）
   let L = null;
   if (sina) {
     L = sina.filter((p) => p[0] >= from).map((p) => [
       p[0],
       round2(metal === "copper" ? p[1] / 100 * LB2KG : p[1]), // HG 美分/磅 -> 美元/吨
     ]);
-  } else {
-    // 新浪不可用：由国内真实收盘 + 当日汇率反推伦敦
-    L = D.map(([ms, dv]) => [ms, round2(impliedLondon(dv, fxFor(rates, ms)[0], metal))]);
+  } else if (D) {
+    L = D.map(([ms, dv]) => [ms, round2(impliedLondon(dv, (fxFor(rates, ms) && fxFor(rates, ms)[0]) || 7.1, metal))]);
   }
-  const H = L.map(([ms, lv]) => [ms, round2(lv * (fxFor(rates, ms)[1] || USDHKD))]);
-  return { ok: true, sinaOk, emOk, L, D, H, rates, fx: latestFx(rates) };
+  if (!L || !L.length || !D || !D.length) return { ok: false, sinaOk, emOk, innerOk };
+  const H = L.map(([ms, lv]) => [ms, round2(lv * ((fxFor(rates, ms) && fxFor(rates, ms)[1]) || USDHKD))]);
+  const ok = L.length >= 120 && D.length >= 120;
+  // live：伦敦来自新浪(实时可达) 即视为本轮有真实数据；domestic 为真实源(东财/新浪内盘)或上一版真实值(准确)
+  return { ok, sinaOk, emOk, innerOk, dSource, dCross, dNote, L, D, H, rates, fx: latestFx(rates), live: true };
 }
 
 // 真实 60 分钟K（国内日内），失败返回 null
@@ -420,10 +547,13 @@ const RANGE = {
 };
 // 单日跳变上限（防数据源出错；白银波动大，2026-01-30 真实崩盘 -26.8%，已双源核实）
 const JUMP_MAX = { gold: 0.25, silver: 0.45, copper: 0.25 };
-function validateSeries(metal, L, D, H, prevLast, spot) {
+function validateSeries(metal, L, D, H, prevLast, spot, cross) {
   const bad = (reason) => ({ ok: false, reason });
   const day = (t) => new Date(t).toISOString().slice(0, 10);
   const jumpMax = JUMP_MAX[metal] || 0.25;
+  // 末端陈旧阈值：伦敦/香港来自新浪(实时可达) 要求 ≤12 天；国内回退到「上一版真实值」时允许 ≤30 天
+  // （真实但可能滞后，远优于 6% 偏高的反推值）
+  const STALE_DAYS = { 伦敦: 12, 国内: 30, 香港: 12 };
   for (const [name, s] of [["伦敦", L], ["国内", D], ["香港", H]]) {
     if (!s || s.length < 800) return bad(name + "条数不足（" + (s ? s.length : 0) + "）");
     const rg = RANGE[metal][name === "伦敦" ? "london" : name === "国内" ? "domestic" : "hongkong"];
@@ -438,7 +568,7 @@ function validateSeries(metal, L, D, H, prevLast, spot) {
       if (i > 0 && p[0] - prevT > 12 * 86400000) return bad(name + "存在大段缺失@" + day(p[0]));
       prevT = p[0]; prevV = p[1];
     }
-    if (Date.now() - s[s.length - 1][0] > 12 * 86400000) return bad(name + "末端数据陈旧（" + day(s[s.length - 1][0]) + "）");
+    if (Date.now() - s[s.length - 1][0] > STALE_DAYS[name] * 86400000) return bad(name + "末端数据陈旧（" + day(s[s.length - 1][0]) + "）");
   }
   // 交叉校验：伦敦日线末端 vs gold-api 真实现货（同一市场，应基本一致）
   if (spot) {
@@ -449,6 +579,10 @@ function validateSeries(metal, L, D, H, prevLast, spot) {
   if (prevLast != null) {
     const dv = D[D.length - 1][1];
     if (Math.abs(dv / prevLast - 1) > 0.15) return bad("国内末端与上版偏差 " + ((dv / prevLast - 1) * 100).toFixed(1) + "%");
+  }
+  // 【C36】双源交叉校验：东财现货 vs 新浪内盘主连。偏差超 2% → 判定某一路串档/错源，拒绝发布。
+  if (cross && !cross.skipped && !cross.ok) {
+    return bad("双源交叉校验不一致（" + cross.date + " 差 " + (cross.dev * 100).toFixed(2) + "%：" + cross.a + " vs " + cross.b + "）");
   }
   return { ok: true };
 }
@@ -581,14 +715,16 @@ const SPOT_SYMBOL = { gold: "xau", silver: "xag", copper: "hg" };
 async function generateAll(preSpot) {
   const startMs = Date.UTC(2021, 0, 1);
   const endMs = Date.now();
+  let prevGeneratedAt = null;
+  try { const pm = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "meta.json"), "utf-8")); prevGeneratedAt = (pm && pm.generatedAt) || null; } catch (e) {}
   let lastUpdate = new Date().toISOString();
   // 现货与汇率每次刷新只抓一次（可由 server 传入复用）
   const spot = preSpot !== undefined ? preSpot : await fetchSpotAll().catch(() => null);
   const anchorYears = Object.keys(USDCNY).map(Number).sort((a, b) => a - b);
   const lastAnchor = USDCNY[anchorYears[anchorYears.length - 1]];
   const modelFx = { usdcny: lastAnchor[lastAnchor.length - 1], hkdcny: Math.round(lastAnchor[lastAnchor.length - 1] / USDHKD * 10000) / 10000 };
-  let anyReal = false, anySpot = false;
-  const health = { goldapi: false, fx: false, sina: {}, eastmoney: {}, pages: {}, disk: {}, validation: {}, hourly: {} };
+  let anyReal = false, anySpot = false, freshReal = false;
+  const health = { goldapi: false, fx: false, sina: {}, sinaInner: {}, eastmoney: {}, pages: {}, disk: {}, domesticSource: {}, cross: {}, validation: {}, hourly: {} };
   // 每日真实汇率（香港价折算用），整轮只抓一次
   let rates = {};
   try { rates = await fetchFX(2200); } catch (e) { rates = {}; }
@@ -600,19 +736,26 @@ async function generateAll(preSpot) {
     let real = null, hRealBars = null;
     try { real = await fetchRealSeries(metal, rates); } catch (e) { real = null; }
     try { hRealBars = await fetchHourlyReal(metal); } catch (e) { hRealBars = null; }
-    if (real) { health.sina[metal] = real.sinaOk; health.eastmoney[metal] = real.emOk; }
+    if (real) {
+      health.sina[metal] = real.sinaOk;
+      health.eastmoney[metal] = real.emOk;
+      if (real.innerOk !== undefined) health.sinaInner[metal] = real.innerOk;
+      if (real.dSource) health.domesticSource[metal] = real.dSource;
+      if (real.dCross && !real.dCross.skipped) health.cross[metal] = real.dCross.dev;
+    }
     if (!real || !real.ok) {
       // 2) 平台沙箱抓不到新浪/东财时：改用 GitHub Pages 上 Actions 刚生成的数据（每15分钟更新）
       real = await fetchFromPages(metal).catch(() => null);
       if (real) health.pages = health.pages || {};
-      if (real) health.pages[metal] = true;
+      if (real) { health.pages[metal] = true; health.domesticSource[metal] = "pages"; }
     }
     if (!real || !real.ok) {
       // 3) 最后：保留本地已有的真实数据（末端仍更新为现货），避免被建模数据覆盖
       real = loadExistingReal(metal);
       if (real) health.disk = health.disk || {};
-      if (real) health.disk[metal] = true;
+      if (real) { health.disk[metal] = true; health.domesticSource[metal] = "disk"; }
     }
+    if (real && real.live) freshReal = true;
     if (real && real.L.length > 200 && real.D.length > 200) {
       dataMode = "real";
       L = real.L; D = real.D; H = real.H;
@@ -693,7 +836,7 @@ async function generateAll(preSpot) {
         prevLast = prev.series.domestic[prev.series.domestic.length - 1][1];
       }
     } catch (e) {}
-    const vres = validateSeries(metal, L, D, H, prevLast, lReal);
+    const vres = validateSeries(metal, L, D, H, prevLast, lReal, real && real.dCross);
     if (!vres.ok) {
       health.validation = health.validation || {};
       health.validation[metal] = vres.reason;
@@ -715,8 +858,11 @@ async function generateAll(preSpot) {
     console.log(`[${metal}] ${dataMode} 日线=${payload.series.london.length} 小时=${payload.hourly.london.length}` + (spotInfo ? ` 现货=${spotInfo.priceUsd} USD` : "") + (hourlyNote ? " 小时线缺失" : ""));
   }
   health.goldapi = !!anySpot;
+  // 【C34】更新时间一致性：只有本轮真正抓到实时真实数据（非 GH Pages/磁盘兜底）才推进 generatedAt；
+  //   否则保留上一版 generatedAt —— 避免「数据冻结却更新时间一直走」的离谱不一致。
+  const generatedAt = freshReal ? lastUpdate : (prevGeneratedAt || lastUpdate);
   const meta = {
-    generatedAt: lastUpdate, dataMode: anyReal ? "real" : (anySpot ? "spot" : "modeled"),
+    generatedAt, dataMode: anyReal ? "real" : (anySpot ? "spot" : "modeled"),
     sourceHealth: health,
     spotSource: anySpot ? ("gold-api.com 现货（XAU/XAG/HG）+ " + (spot && spot.fx ? spot.fx.source : "Frankfurter") + " 汇率") : null,
     markets: {
@@ -822,6 +968,15 @@ const MACRO_KEYS = [
   // 【C20】国内源是中文标题，需补中文宏观关键词（否则「美联储…议息」类中文快讯无法入库）
   /美联储|联储|议息|利率决议|非农|失业率|量化宽松|缩表|避险/,
 ];
+// 【C29】非目标金属门禁：本产品只追踪 金 / 银 / 铜。SMM「有色·快讯」等频道是综合有色金属源，
+//   会混入 铝 / 锂 / 锌 / 镍 / 铅 / 锡 / 稀土 / 钢铁 / 钴 / 钼 等与金银铜定价无关的金属快讯
+//   （如「SMM铝快讯：Inalum 强调从铝土矿到氧化铝…」），必须剔除，否则铝土矿新闻会污染贵金属列表。
+//   仅当文本「显式提到金 / 银 / 铜」时才视为相关（如「阴极铜铝期货」含阴极铜，属铜，保留）。
+const OTHER_METAL = /铝|锂|锌|镍|铅|锡|稀土|钢铁|钴|钼|镁|钨|钛|钒|锰/;
+const TARGET_METAL = /金价|黄金|白银|银价|铜价|沪铜|伦铜|阴极铜|电解铜|铜矿|铜精矿|铜库存|铜需求|铜消费|铜供应|铜加工|铜冶炼|铜产量|铜产能|\bgold\b|\bsilver\b|\bcopper\b|\blme\b|precious metal|bullion/i;
+function isOtherMetalOnly(t) {
+  return OTHER_METAL.test(t) && !TARGET_METAL.test(t);
+}
 function stripText(s) {
   return String(s)
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
@@ -908,6 +1063,9 @@ function routeMetal(t) {
   //                → 纯宏观（Fed/美元/通胀）与铜**无关**，宏观命中也不再带上铜。
   //   这样铜只收「真正在讲铜」的事件，金银只收「真正与货币定价相关」的事件。
   const s = String(t || "");
+  // 【C29】非目标金属门禁（见 isOtherMetalOnly 说明）：铝/锂/锌/镍/稀土/钢铁等与本产品无关的金属
+  //   快讯直接剔除，从源头堵住「铝土矿新闻灌进贵金属列表」这类污染。
+  if (isOtherMetalOnly(s)) return [];
   const hits = [];
   for (const m of ["gold", "silver", "copper"]) if (METAL_KEYS[m].some((r) => r.test(s))) hits.push(m);
   if (hits.length) return hits;                                    // 显式金属词 → 仅该品种
@@ -986,6 +1144,21 @@ function zhTags(t) {
   const tags = [];
   for (const [re, zh] of ZH_PHRASES) if (re.test(t) && tags.indexOf(zh) < 0) tags.push(zh);
   return tags.slice(0, 4);
+}
+/**
+ * 【C32-bugfix】标签去噪：滤掉方向性废话 + **互斥标签**。
+ *   实拍：「日本央行按兵不动但释放鹰派信号」被同时打上「不加息」「加息」——两个相反标签并列，
+ *   用户第一反应是这条结论不可信。做法：有「不加息」就删「加息」；加息/降息并存时按标题语气保留一边。
+ *   生成侧统一调用（视图侧仍保留同样的兜底过滤，防止旧数据/云端快照漏网）。
+ */
+function normalizeTags(tags, title) {
+  let t = (tags || []).filter((x) => x && x !== "走强" && x !== "走弱");
+  if (t.indexOf("不加息") >= 0) t = t.filter((x) => x !== "加息");
+  if (t.indexOf("加息") >= 0 && t.indexOf("降息") >= 0) {
+    const keepHike = /加息|鹰派|收紧|紧缩/.test(String(title || ""));
+    t = t.filter((x) => x !== (keepHike ? "降息" : "加息"));
+  }
+  return t.slice(0, 6);
 }
 function zhTitle(t, tags) {
   // 【C22 用户反馈】「标题…的信息，不知所云。与事件的概括、影响结论/预测，对不上」
@@ -1954,6 +2127,78 @@ function clipSummary(s, lim) {
   if (m2 && m2.index >= Math.floor(L * 0.55)) return head.slice(0, m2.index).replace(/[，、；\s]+$/, "");
   return head.replace(/[，、；\s]+$/, "");
 }
+
+/**
+ * 【C32-bugfix】跨品种事件按品种拆份 + 全量补 impactEff（生成与回填共用，避免两处逻辑漂移）。
+ *
+ * 根因：事件正本只存一份、用 metals[] 记录影响品种，但 impactScope / impactDegree /
+ *   impactConclusion 是在「正本所在桶的品种」上下文里生成的 → 银列表显示「金价 / AU9999」
+ *   「金价短线承压」，铜列表也会显示「金价短线承压」（用户实拍红框）。
+ * 做法：受影响的每个品种桶各持一份「只认自己」的副本（metals=[m]），措辞按该品种重算；
+ *   视图契约不变（三端仍按 metals[] 过滤），列表条数不变，只是每条都说自己品种的话。
+ * 幂等：目标桶已有同标题同日期条目就跳过，下一轮不会重复拆份。
+ * 返回 { cloned, effFixed } 便于日志/自测断言。
+ */
+function splitCrossMetalEvents(res) {
+  const METALS = ["gold", "silver", "copper"];
+  const fmtBase = (e) => String(e.desc || e.summary || "").replace(/。对(贵金属|铜价)影响：.*$/, "").trim();
+  // 结论引擎的「事实补充」入参口径（与 backfill 脚本一致）：摘要去掉结论后缀优先，其次 desc
+  function altOf(e) {
+    return String(e.summary || "").replace(/。对(?:贵金属|铜价)影响：.*$/, "").trim() || e.desc || "";
+  }
+  const pending = [];
+  for (const m of METALS) {
+    for (const e of (res[m] || [])) {
+      if (Array.isArray(e.metals) && e.metals.length > 1) pending.push({ from: m, e, metals: e.metals.slice() });
+      e.metals = [m]; // 每个对象只认自己所在桶的品种
+    }
+  }
+  let cloned = 0;
+  for (const p of pending) {
+    for (const target of p.metals) {
+      if (target === p.from) continue;
+      const bucket = res[target];
+      if (!bucket) continue;
+      if (bucket.some((x) => x.title === p.e.title && x.date === p.e.date)) continue;
+      const base = altOf(p.e);
+      const copy = Object.assign({}, p.e);
+      copy.metals = [target];
+      copy.impact = impactOf(p.e.title);
+      copy.impactScope = NF.impactScope(target, p.e.title, base);
+      copy.impactDegree = NF.impactDegree(target, p.e.title, copy.impact, base);
+      copy.impactConclusion = NF.impactConclusion(target, p.e.title, copy.impact, base);
+      copy.impactEff = NF.impactEffDir(target, p.e.title, copy.impact, base);
+      if (base.length >= 8) copy.summary = clipSummary(base, 110) + impactSuffix(target, p.e.title, copy.impact, base);
+      bucket.push(copy);
+      cloned++;
+    }
+  }
+  // 全量兜底：任何一条都必须带齐「影响面 / 程度 / 结论 / 有效方向」四字段，且四者同源。
+  //   【C32-bugfix】此前只补 impactEff，导致两类不一致：
+  //     ① 从历史继承、没走「自愈重校」分支的存量条目（seed/无 auto·cn 标记，实测 60/157）四字段全缺 → 三端空白结论；
+  //     ② 结论是更早一轮（入参不同）算的，而 impactEff 是本轮算的 → 实测「gold 徽章 mixed / 正文短线承压」互相打脸。
+  //   故改为**无条件整套重算**（引擎幂等，输入相同则输出相同），保证徽章永远等于正文说的方向。
+  //   口径与 backfill-impact-conclusion.js 严格一致（fact=标题，alt=摘要去结论后缀）。
+  let effFixed = 0;
+  let fieldFilled = 0;
+  for (const m of METALS) {
+    for (const e of (res[m] || [])) {
+      const imp = e.impact || impactOf(e.title);
+      const alt = altOf(e);
+      const hadAll = !!(e.impactConclusion && Array.isArray(e.impactScope) && e.impactScope.length && e.impactDegree);
+      const nextEff = NF.impactEffDir(m, e.title, imp, alt);
+      const nextConcl = NF.impactConclusion(m, e.title, imp, alt);
+      const changed = hadAll && (nextEff !== e.impactEff || nextConcl !== e.impactConclusion);
+      e.impactScope = NF.impactScope(m, e.title, alt);
+      e.impactDegree = NF.impactDegree(m, e.title, imp, alt);
+      e.impactConclusion = nextConcl;
+      e.impactEff = nextEff;
+      if (!hadAll) fieldFilled++;
+      else if (changed) effFixed++;
+    }
+  }
+  return { cloned, effFixed, fieldFilled };
+}
 function zhSummary(t, desc, tags, cat, metal) {
   const dir = impactOf(t);
   const detail = stripText(desc || "");
@@ -2197,7 +2442,7 @@ async function buildEvents() {
   const seenAll = new Set();
   for (const m of METALS_ARR) {
     // 种子条目本身就是中文，补充关键标签
-    res[m] = (base[m] || []).map((e) => Object.assign({}, e, { tags: e.tags || zhTags(e.title) }));
+    res[m] = (base[m] || []).map((e) => Object.assign({}, e, { tags: normalizeTags(e.tags || zhTags(e.title), e.title) }));
     seen[m] = new Set(res[m].map((e) => e.title));
     res[m].forEach((e) => seenAll.add(e.title));
   }
@@ -2248,9 +2493,20 @@ async function buildEvents() {
             .replace(/。对(贵金属|铜价)影响：.*$/, "");
         }
         e.summary = clipSummary(base, 110) + impactSuffix(m, e.title, impactOf(e.title), base);
+        // 【C31】影响面 / 程度分级：结构化落到事件上，供三端渲染成「影响小标签」（不再只是固定结论句）
+        e.impactScope = NF.impactScope(m, e.title, base);
+        e.impactDegree = NF.impactDegree(m, e.title, impactOf(e.title), base);
+        // 【C32】自然语言影响结论：模板化结论的根因修复（现场组句，不再查表取整句）
+        e.impactConclusion = NF.impactConclusion(m, e.title, impactOf(e.title), base);
+        // 【C32-bugfix】机制修正后的有效方向：徽章与结论同源（原「徽章中性 + 结论承压」互相打脸）
+        e.impactEff = NF.impactEffDir(m, e.title, impactOf(e.title), base);
         // 【C22】摘要层再查一次低质译文（正文里挂着英文原句的情况）
         if (NF.isJunk(e.summary)) continue;
-        const rt = routeMetal(e.title + " " + (e.summary || ""));
+        const rtRaw = e.origTitle || e.title;
+        // 【C29】非目标金属（铝/锂/锌/镍…）旧脏数据直接剔除——即便它自身结论里含「金价」也一并清掉，
+        //   否则会被 routeMetal 二次匹配回贵金属列表（铝事件自我强化进金银的根因）。
+        if (isOtherMetalOnly(rtRaw)) continue;
+        const rt = routeMetal(rtRaw + " " + (e.desc || ""));
         e.metals = Array.from(new Set([...(rt.length ? rt : [m]), m]));
         // 【C19】存量条目的日期回填：历史条目是用旧口径（本地时区）算出来的日期，
         //   一旦入库就被原样沿用 → 日期会一直停在错误那天（实测 CNBC 文章被记成 URL 日期 +1 天，
@@ -2304,7 +2560,7 @@ async function buildEvents() {
     for (const cl of clusters) {
       // 权威出处优先：按来源权威度排序，最高者为权威出处
       const rep = cl.items[0];
-      const tags = zhTags(rep.title);
+      const tags = normalizeTags(zhTags(rep.title), rep.title);
       const cat = catOf(rep.title);
       const title = zhTitle(rep.title, tags);
       if (seen[m].has(title) || seenAll.has(title)) continue;
@@ -2331,6 +2587,10 @@ async function buildEvents() {
         url: rep.url || "",
         origTitle: rep.title,
         tags,
+        impactScope: NF.impactScope(m, rep.title, rep.desc),
+        impactDegree: NF.impactDegree(m, rep.title, impactOf(rep.title), rep.desc),
+        impactConclusion: NF.impactConclusion(m, rep.title, impactOf(rep.title), rep.desc),
+        impactEff: NF.impactEffDir(m, rep.title, impactOf(rep.title), rep.desc),
         auto: true,
         fetchedAt, // 入库时间（与事件发生日 date 分开，用于展示「事件更新至…」）
       });
@@ -2354,6 +2614,16 @@ async function buildEvents() {
   const dedupTotal = METALS_ARR.reduce((n, m) => n + dedupStat[m], 0);
   if (dedupTotal || xr.merged) {
     console.log(`[dedupe] 品种内剔除 ${dedupTotal} 条，跨品种合并 ${xr.merged} 条副本`);
+  }
+
+  // 3) 【C32-bugfix】跨品种事件按品种拆份 + 全量补 impactEff（实现见 splitCrossMetalEvents，
+  //   与 backfill 脚本共用同一份逻辑，避免两处漂移）
+  {
+    const r = splitCrossMetalEvents(res);
+    if (r.cloned || r.effFixed || r.fieldFilled) {
+      console.log("[events] 跨品种按品种拆份 " + r.cloned + " 条 | impactEff 回填 " + r.effFixed +
+        " 条 | 影响四字段补齐 " + r.fieldFilled + " 条");
+    }
   }
 
   for (const m of METALS_ARR) {
@@ -2448,11 +2718,27 @@ function validateEvents(res) {
       prev = e.date;
     }
   }
-  // 跨品种重复门禁：合并视图（小程序/手机网页）不允许同一事件出现多次
-  const all = ED.eventsAll(res, { dedupe: false });
-  const xd = ED.findDuplicates(all, { strict: true });
-  if (xd.length) {
-    errs.push("跨品种重复 " + xd.length + " 组，例：" + xd[0].items[0] + " ≈ " + xd[0].keeper);
+  // 【C32-bugfix】重复门禁必须按「品种视图」判，不能按「全桶扁平」判。
+  //   背景：C32 起跨品种事件在生成时会按品种拆份（各桶一份副本、metals=[m]），
+  //   目的是让银列表说的是银价、铜列表说的是铜价；合并视图（「全部」）靠标题去重展示。
+  //   若仍用 ED.eventsAll(res,{dedupe:false}) 扁平判重，同一事件在 gold/silver 各一份
+  //   就会被报成「跨品种重复 28 组」→ 每轮校验失败 → 事件永远保留上一版（实测平台停更 12 小时）。
+  //   现在守两条：①每个品种视图内部零重复；②副本措辞不许串味（银桶的结论不能写金价）。
+  for (const m of ["gold", "silver", "copper"]) {
+    const view = ED.eventsFor(res, m);
+    const xd = ED.findDuplicates(view, { strict: true });
+    if (xd.length) {
+      errs.push(m + "视图内重复 " + xd.length + " 组，例：" + xd[0].items[0] + " ≈ " + xd[0].keeper);
+    }
+  }
+  // 副本措辞串味：影响面标签里出现的品种必须覆盖该桶品种（金银比等关联表述写在事实正文里，不受此限）
+  const SCOPE_RE = { gold: /金/, silver: /银/, copper: /铜/ };
+  for (const m of ["gold", "silver", "copper"]) {
+    const bad = ((res && res[m]) || []).filter((e) => {
+      const sc = Array.isArray(e.impactScope) ? e.impactScope.join(" ") : String(e.impactScope || "");
+      return sc && !SCOPE_RE[m].test(sc);
+    });
+    if (bad.length) errs.push(m + ":影响面串味 " + bad.length + " 条，例：" + String(bad[0].title).slice(0, 30) + " → " + JSON.stringify(bad[0].impactScope));
   }
   // 影响品种字段完整性：缺失会导致按品种查看丢事件
   for (const m of ["gold", "silver", "copper"]) {
@@ -2462,5 +2748,5 @@ function validateEvents(res) {
   return errs;
 }
 
-module.exports = { generateAll, fetchSpotAll, buildEvents, zhGist, zhSummary, zhTitle, zhTags, zhFact: NF.zhFact };
+module.exports = { generateAll, fetchSpotAll, buildEvents, zhGist, zhSummary, zhTitle, zhTags, normalizeTags, zhFact: NF.zhFact, splitCrossMetalEvents };
 if (require.main === module) generateAll().then((r) => console.log("done", r)).catch((e) => { console.error(e); process.exit(1); });
