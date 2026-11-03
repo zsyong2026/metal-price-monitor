@@ -26,8 +26,17 @@ jobs:
       - name: 生成真实数据（东财 AU9999/AGTD/沪铜 + 新浪国际/内盘，均真实可达）
         run: node generate-all.js
 
-      - name: 推送真源数据到 GH Pages（data/ 唯一写入者）
-        run: node tools/push_data.js
+      - name: 推送真源数据到 GH Pages（data/ 唯一写入者，用 checkout 内置 GITHUB_TOKEN）
+        run: |
+          git config user.name "metal-bot"
+          git config user.email "actions@github.com"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "数据无变化，跳过提交"
+          else
+            git commit -m "data: 真实数据推送 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git push origin HEAD:main || echo "推送冲突，下一轮重试"
+          fi
 
       - name: 巡检平台真源（生成成功 / 数据新鲜 / 镜像）—— 仅信息，不阻断
         if: always()
