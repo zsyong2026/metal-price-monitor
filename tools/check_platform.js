@@ -20,7 +20,14 @@ const ED = require(path.join(__dirname, "..", "js", "event-dedupe.js"));
 const PLATFORM_HOST = "metal-price-monitor.app.workbuddy.host";
 const SHARE = "POOW32T4LI";
 const GH_PAGES_CANON = "https://zsyong2026.github.io/metal-price-monitor/data";
-const MAX_AGE_MIN = 25;        // Actions 每 15 分钟一版 + 余量
+// 【阈值口径（按实测校准，勿再按「每 15 分钟一轮」的假设设阈）】
+//   GitHub Actions 的 schedule 写的是 */15，但低活跃仓库会被排队合并 —— 实测真实触发间隔为
+//   61 / 69 / 78 / 65 分钟（2026-11-03 当天连续几次 schedule 的 created_at 差值），
+//   即「约每小时一轮」。故真源新鲜度阈值取 90 分钟（覆盖一次真实间隔 + 余量），
+//   否则每次巡检都会误报「真源陈旧」。
+//   注意：平台（只读代理）自己是每 15 分钟同步一次真源，所以「平台落后真源」用 60 分钟阈值，
+//   那才是真正的异常信号。
+const MAX_AGE_MIN = 90;        // 真源新鲜度：Actions 实测约每小时一轮，取 90 分钟
 // 平台落后真源的告警阈值：平台每 15 分钟全量同步一次真源（syncFromPages），
 //   Actions 也是每 15 分钟产出 → 理论最大滞后 ≈ 生成 15 + 同步 15 + 延迟 ≈ 35~40 分钟；
 //   另有一种可容忍情形：平台进程重启后会先回落读「部署时随包注入」的磁盘快照，
