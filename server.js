@@ -377,7 +377,7 @@ const server = http.createServer(async (req, res) => {
       const ts = {};
       for (const f of FILES) ts[f] = (cache[f] && cache[f].updatedAt) || (readDisk(f) || {}).updatedAt || "";
       sendJSON(res, 200, {
-        ok: true, role: "canonical-generator", generatedAt: lastGenAt ? new Date(lastGenAt).toISOString() : null,
+        ok: true, role: "readonly-proxy", generatedAt: lastGenAt ? new Date(lastGenAt).toISOString() : null,
         lastGenOk, lastError, updatedAt: ts,
         // C19：GH Pages 镜像推送状态（微信 UA 唯一可读源的 freshness 取决于它）
         mirror: {
@@ -424,5 +424,6 @@ const server = http.createServer(async (req, res) => {
 })();
 
 server.listen(PORT, HOST, () => {
-  console.log("[server] 真源生成器已启动 http://" + HOST + ":" + PORT + " ← 本地 generate.js 每 " + (GEN_INTERVAL_MS / 60000) + " 分钟一版");
+  console.log("[server] 只读代理已启动 http://" + HOST + ":" + PORT +
+    "（真源：GH Pages / GitHub Actions，每 " + (GEN_INTERVAL_MS / 60000) + " 分钟尝试从真源同步）");
 });
