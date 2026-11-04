@@ -22,19 +22,26 @@ const SHARE = "POOW32T4LI";
 const GH_PAGES_CANON = "https://zsyong2026.github.io/metal-price-monitor/data";
 // 【阈值口径（按实测校准，勿再按「每 15 分钟一轮」的假设设阈）】
 //   GitHub Actions 的 schedule 写的是 */15，但低活跃仓库会被排队合并 —— 实测真实触发间隔为
-//   61 / 69 / 78 / 65 分钟（2026-11-03 当天连续几次 schedule 的 created_at 差值），
-//   即「约每小时一轮」。故真源新鲜度阈值取 90 分钟（覆盖一次真实间隔 + 余量），
-//   否则每次巡检都会误报「真源陈旧」。
-//   注意：平台（只读代理）自己是每 15 分钟同步一次真源，所以「平台落后真源」用 60 分钟阈值，
-//   那才是真正的异常信号。
-const MAX_AGE_MIN = 90;        // 真源新鲜度：Actions 实测约每小时一轮，取 90 分钟
-// 平台落后真源的告警阈值：平台每 15 分钟全量同步一次真源（syncFromPages），
-//   Actions 也是每 15 分钟产出 → 理论最大滞后 ≈ 生成 15 + 同步 15 + 延迟 ≈ 35~40 分钟；
-//   另有一种可容忍情形：平台进程重启后会先回落读「部署时随包注入」的磁盘快照，
-//   直到首次 syncFromPages 成功才追上真源（实测出现过一次回落 2 小时余）。
-//   故阈值取 60 分钟（覆盖两个同步周期），既能放过偶发回落，又能抓住上百分钟级的真异常。
+//   52~81 分钟（2026-11-03/04 连续 22 轮 schedule 的 created_at 差值），即「约每小时一轮」。
+//   故真源新鲜度阈值取 90 分钟（覆盖一次真实间隔 + 余量），否则每轮都会误报「真源陈旧」。
+//
+// 【C43·告警判据重写】此前只看「平台吐出的数据落后真源多少分钟」，阈值 60 分钟。
+//   问题：① 60 分钟太松 —— 平台每 15 分钟同步一次，正常漂移应 < 15 分钟，
+//   真正该抓的是「同步链路挂了」而不是「慢了一点点」；
+//   ② 判据只看数据漂移，看不出**为什么**漂移 —— 平台同步失败、真源更新、真源被污染
+//   三种完全不同的病因开出同一张告警，处置方式却相反（真源更新 → 什么都不用做；
+//   平台挂了 → 要修平台；真源被污染 → 要回滚）。这是典型的「报了一堆但没法处置」。
+//   现改为：先看平台自报状态（lastGenOk/lastError/source），再算漂移，
+//   并按病因分类给出不同的处置指引。
+const MAX_AGE_MIN = 90;         // 真源新鲜度：Actions 实测约每小时一轮，取 90 分钟
+// 平台漂移：平台每 15 分钟同步一次真源，正常漂移 < 15 分钟。
+//   60 分钟 = 落后 4 个同步周期，足以判定链路异常；再放宽就会漏报真正的卡死。
 const DRIFT_WARN_MIN = 60;
+// 平台自报同步失败（lastGenOk=false）时，**无论漂移多少分钟都立即报**——
+//   这是最强的信号：平台自己都说没同步上，哪怕数据暂时还新鲜也该报（否则真源一旦
+//   同时停更，会因为"漂移还没超阈值"而静默，直到双故障叠加才暴露）。
 const TIMEOUT_MS = 15000;
+
 
 function getJSON(url) {
   return new Promise((resolve) => {
@@ -92,19 +99,46 @@ function ageMin(iso) {
       if (health.role && health.role !== "readonly-proxy") {
         info.push("平台仍运行旧架构（role=" + health.role + "），建议重发 C37 只读代理版");
       }
+
+      // ── ②a 平台自报同步状态（最强信号，优先于漂移计算）──
+      // 【C43】lastGenOk=false 表示平台最近一轮真源同步失败。
+      //   这是「平台侧链路故障」的直接证据，且能区分病因：
+      //     · source.mirrors 全空 → 真源镜像池（GH Pages/jsDelivr/raw）全部不可达 → 平台出网问题
+      //     · source.mirrors 非空但仍失败 → 镜像可用但取文件失败 → 单文件/大文件问题
+      //   无论漂移多少分钟都要报：否则「平台已挂 + 真源恰好更新」时会因漂移未超阈值而静默，
+      //   等双故障叠加才暴露 —— 那正是「牵一发而动全身」被延误的典型形态。
+      const src = health.source || {};
+      if (health.lastGenOk === false) {
+        const mirrors = (src.mirrors || []).join(",");
+        problems.push(
+          "【平台同步失败】平台自报最近一轮真源同步失败（lastGenOk=false）。" +
+          "lastError=" + JSON.stringify(health.lastError || "(空)") +
+          "；可用镜像=" + (mirrors || "无（三路真源镜像全部不可达）") +
+          "。平台当前只能服务上一轮缓存/部署快照，PC 网页与小程序云函数可能读到陈旧价格。" +
+          (mirrors
+            ? "处置：平台可连通真源镜像但取文件失败 → 检查 events.json 等大文件是否被链路掐断（当前已加多镜像+硬超时+局部隔离，应已自愈；仍失败则重发平台版）。"
+            : "处置：平台沙箱无法连通 GH Pages/jsDelivr/raw 任一出口 → 重发平台版以带上新固件（多镜像+硬超时+自愈重试）。"));
+      } else if (health.lastGenOk === true && health.lastError) {
+        info.push("平台同步正常（lastError=" + JSON.stringify(health.lastError) + "）");
+      }
+
+      // ── ②b 数据漂移 ──
       // 平台吐出的实际数据时间戳（gold 末值入库时间），而非缓存时间戳
       const platTs = (gold && (gold.lastUpdate || (gold.meta && gold.meta.generatedAt))) ||
         ((health.updatedAt || {})["gold.json"]);
       if (platTs) {
         const drift = ageMin(platTs) - ageMin(canon.generatedAt); // 正 = 平台落后于真源
         console.log("[platform] served lastUpdate=" + platTs + " 落后真源约 " + Math.round(drift) + " 分钟");
-        if (drift > DRIFT_WARN_MIN) {
-          problems.push("【平台落后真源】平台吐出数据（" + platTs + "）落后 GH Pages 真源（" + canon.generatedAt +
-            "）约 " + Math.round(drift) + " 分钟，超出 " + DRIFT_WARN_MIN + " 分钟阈值。" +
-            "PC 网页 / 非微信手机网页 / 小程序 dev 云函数会读到陈旧价格。" +
-            "处置：重发平台版（随包注入最新 data/，或确保平台能同步 GH Pages 真源）。");
-        } else if (drift > 10) {
-          info.push("平台数据落后真源约 " + Math.round(drift) + " 分钟（在部署窗口内，属正常）");
+        // 平台同步已失败时，漂移告警并入上面那条（避免同一病因报两次、噪音翻倍）
+        if (health.lastGenOk !== false) {
+          if (drift > DRIFT_WARN_MIN) {
+            problems.push("【平台落后真源】平台吐出数据（" + platTs + "）落后 GH Pages 真源（" + canon.generatedAt +
+              "）约 " + Math.round(drift) + " 分钟，超出 " + DRIFT_WARN_MIN + " 分钟阈值。" +
+              "平台每 15 分钟同步一次真源，正常漂移应 < 15 分钟，故此为异常。" +
+              "处置：重发平台版（随包注入最新 data/，或确保平台能同步 GH Pages 真源）。");
+          } else if (drift > 20) {
+            info.push("平台数据落后真源约 " + Math.round(drift) + " 分钟（平台每 15 分钟同步一次，阈值 " + DRIFT_WARN_MIN + " 分钟）");
+          }
         }
       } else {
         problems.push("平台未返回可用数据时间戳（gold.lastUpdate 缺失，/api/data/gold 可能异常）");
