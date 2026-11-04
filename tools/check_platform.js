@@ -199,13 +199,16 @@ function ageMin(iso) {
       //   此时再报才是真告警。
       //   注意不能用「updatedAt 是否有值」判断：部署包自带的磁盘快照也有时间戳，
       //   冷启动期间 updatedAt 非空，但同步确实还没成功过一次。
-      //   【宽限不能无限】若平台**永远**同步不上，generatedAt 会一直为空 →
-      //   会被永久宽限、永远不告警。故用「平台进程启动时刻」兜底：
-      //   平台启动超过 COLD_START_GRACE_MIN 分钟仍未成功同步过一次 → 报真故障。
-      //   启动时刻取 /api/health 的 processStartAt（server.js 新增，进程启动即固定）。
+      // 【C44·宽限不能被滥用】用 lastSuccessAt（跨重启持久化的「最近一次成功同步时间」）：
+      //   · 本进程没成功过、但历史上成功过 → 真冷启动 → 宽限；
+      //   · 连历史记录都没有 → 该实例从上线起就没成功同步过 → 真故障，不宽限；
+      //   · 进程启动已超 COLD_START_GRACE_MIN 分钟仍未成功 → 真故障。
+      //   否则「反复重启、每次都没同步成功」会被冷启动宽限无限掩盖。
       const coldStart = !health.generatedAt;
+      const everSynced = !!(health.lastSuccessAt || health.generatedAt);
       const upMin = health.processStartAt ? ageMin(health.processStartAt) : NaN;
-      const coldStartExpired = coldStart && !isNaN(upMin) && upMin > COLD_START_GRACE_MIN;
+      const coldStartExpired = coldStart
+        && (!everSynced || (!isNaN(upMin) && upMin > COLD_START_GRACE_MIN));
       if (coldStart && !coldStartExpired) {
         info.push("平台刚启动（尚未完成首轮真源同步，状态量仍为初值），本次不判定为故障");
       } else if (health.lastGenOk === false) {
