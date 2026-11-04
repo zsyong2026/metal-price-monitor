@@ -1,0 +1,120 @@
+<block wx:if="{{ loading }}">
+  <view class="state-box">
+    <view class="spinner"></view>
+    <text class="muted">正在获取行情数据…</text>
+  </view>
+</block>
+
+<block wx:elif="{{ loadErr }}">
+  <view class="state-box">
+    <text class="err-title">数据加载失败</text>
+    <text class="muted">{{ loadErr }}</text>
+    <button class="retry" bindtap="loadAll">重试</button>
+  </view>
+</block>
+
+<block wx:else>
+  <!-- 顶部：标题 + 数据模式 + 更新时间 -->
+  <view class="head">
+    <view>
+      <view class="title">金属价格收集</view>
+      <view class="subtitle">金 / 银 / 铜 · 国内 / 香港 / 伦敦</view>
+    </view>
+    <view class="head-right">
+      <view class="badge {{ dataMode === 'real' ? 'badge-real' : dataMode === 'snapshot' ? 'badge-snap' : 'badge-warn' }}">{{ dataMode === 'real' ? '真实数据' : dataMode === 'snapshot' ? '快照数据' : '缓存数据' }}</view>
+      <view class="update-time">更新于 {{ lastUpdate }}</view>
+    </view>
+  </view>
+
+  <view wx:if="{{ snapshotMode }}" class="snap-banner">实时数据获取失败，当前展示离线快照（下拉刷新可重试）</view>
+
+  <!-- 数据通道诊断：仅在失败时出现，便于定位「加了域名仍走快照」类问题 -->
+  <view wx:if="{{ diag && snapshotMode }}" class="diag-line">诊断：{{ diag }}</view>
+
+  <!-- 品种切换（sticky 放在 .metal-bar 上，滚动时固定在导航栏下方） -->
+  <view class="metal-bar">
+    <view class="metal-tab-row">
+      <view wx:for="{{ metals }}" wx:key="key"
+            class="metal-tab {{ metal === item.key ? 'active' : '' }}"
+            data-metal="{{ item.key }}" bindtap="switchMetal">{{ item.name }}</view>
+    </view>
+  </view>
+
+  <!-- 粒度 + 市场合并一行（flex 对齐，窄屏压缩 chip 不折行）；
+       价格更新时间不放本行——375px 实测合并行已近满宽，并入必折行（C08），
+       改挂「单位」行行末右对齐（与网页版筛选区行末同一语义），铜无单位行时用 else 独立小行兜底 -->
+  <view class="opt-row opt-merged">
+    <text class="opt-label">粒度</text>
+    <view class="opt-chips">
+      <view wx:for="{{ grans }}" wx:key="key"
+            class="chip {{ gran === item.key ? 'active' : '' }} {{ item.key === 'hour' && !hourlyReady ? 'disabled' : '' }}"
+            data-gran="{{ item.key }}" bindtap="switchGran">{{ item.name }}<text wx:if="{{ item.key === 'hour' && !hourlyReady }}" class="chip-note">暂无</text></view>
+    </view>
+    <text class="opt-label opt-label-gap">市场</text>
+    <view class="opt-chips">
+      <view wx:for="{{ marketList }}" wx:key="key"
+            class="chip market-{{ item.key }} {{ markets[item.key] ? 'active' : '' }}"
+            data-market="{{ item.key }}" bindtap="toggleMarket">{{ item.name }}</view>
+    </view>
+  </view>
+
+  <!-- 单位（仅金银，元/克视图）；价格更新时间作提示信息跟随行末右对齐 -->
+  <view class="opt-row" wx:if="{{ gramOk }}">
+    <text class="opt-label">单位</text>
+    <view class="opt-chips">
+      <view class="chip {{ !gram ? 'active' : '' }}" bindtap="setGram" data-v="0">原始单位</view>
+      <view class="chip {{ gram ? 'active' : '' }}" bindtap="setGram" data-v="1">元 / 克</view>
+    </view>
+    <view class="price-update">{{ priceUpdate }}</view>
+  </view>
+  <!-- 铜（无单位行）：价格时间独立右对齐小行，不因单位行隐藏而丢失、不占整行高度 -->
+  <view class="opt-row price-row" wx:elif="{{ priceUpdate }}">
+    <view class="price-update">{{ priceUpdate }}</view>
+  </view>
+
+  <!-- 统计卡（价格更新时间已并入上方筛选行行末，不在此重复） -->
+  <view class="stat-grid" wx:if="{{ stats }}">
+    <view class="stat-item">
+      <view class="k">最新价（{{ primaryMarketCN }}）</view>
+      <view class="v">{{ stats.lastText }}</view>
+      <view class="s">{{ stats.unit }}</view>
+    </view>
+    <view class="stat-item">
+      <view class="k">最新日涨跌</view>
+      <view class="v {{ stats.dayCls }}">{{ stats.dayPct }}</view>
+      <view class="s">{{ stats.dayAbs }}</view>
+    </view>
+    <view class="stat-item">
+      <view class="k">近一年涨跌</view>
+      <view class="v {{ stats.yearCls }}">{{ stats.yearPct }}</view>
+      <view class="s">{{ stats.n }} 个数据点</view>
+    </view>
+    <view class="stat-item">
+      <view class="k">历史区间</view>
+      <view class="v his-range">
+        <view class="hr-row"><text class="hr-key v-up">高</text><text class="hr-val v-up">{{ stats.hi }}</text></view>
+        <view class="hr-row"><text class="hr-key v-down">低</text><text class="hr-val v-down">{{ stats.lo }}</text></view>
+      </view>
+      <view class="s">近 {{ spanYears }} 年高低点</view>
+    </view>
+  </view>
+
+  <!-- 图表（支持全屏横屏查看） -->
+  <view class="card chart-card {{ full ? 'chart-full' : '' }}">
+    <view class="chart-stage">
+      <view class="full-btn" catchtap="toggleFull">{{ full ? '✕ 退出横屏' : '⛶ 横屏放大' }}</view>
+      <ec-canvas id="chart" canvas-id="chartCanvas" echarts="{{ echarts }}" ec="{{ ec }}"></ec-canvas>
+      <view wx:if="{{ hourlyNote }}" class="hourly-note">{{ hourlyNote }}</view>
+    </view>
+    <view class="chart-tip" wx:if="{{ !full }}">交易时段为实线，非交易时段（夜间 / 周末 / 节假日）以虚线连接；双指缩放、单指拖动查看</view>
+  </view>
+
+  <!-- 重大事件：微信内网页式直接展示（与事件页共用组件，滚动自然衔接） -->
+  <!-- 标题行：标题 + 事件更新时间同一行（用户反馈 C09：时间不该折在分类筛选器之后），
+       组件内不再单独渲染时间行（由 showTitle 控制，首页标题在页面层，组件不重复） -->
+  <view class="events-head-row">
+    <view class="section-label events-label" id="eventsTop">重大事件 · {{ metalName }}（{{ eventCount }} 条）</view>
+    <view class="ev-update" wx:if="{{ eventsUpdate }}">{{ eventsUpdate }}</view>
+  </view>
+  <event-list id="eventList" metal="{{ metal }}" showMetalTabs="{{ false }}" />
+</block>
