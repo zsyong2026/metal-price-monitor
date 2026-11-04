@@ -22,11 +22,14 @@ const DATA = path.resolve(__dirname, "..", "data");
 const GH_PAGES_CANON = "https://zsyong2026.github.io/metal-price-monitor/data";
 
 // 【阈值口径（按实测校准）】GitHub Actions 的 schedule 虽写 */15，但低活跃仓库会被排队合并，
-//   实测真实触发间隔为 61~78 分钟（约每小时一轮），并非 15 分钟。
-//   故价格陈旧阈值取 90 分钟（原 45 分钟会常态误报）、事件陈旧阈值取 180 分钟。
-//   真正细粒度的异常由 check_platform.js 的「平台落后真源」（60 分钟阈值）覆盖。
-const PRICE_STALE_MIN = 90;   // 价格真源：Actions 实测约每小时一轮
-const EVENT_STALE_MIN = 180;  // 事件：事件源本身按更慢节奏更新
+//   实测真实触发间隔为 52~81 分钟（2026-11-03/04 连续 22 轮 schedule 的 created_at 差值），
+//   并非 15 分钟。
+//   故价格陈旧阈值取 120 分钟（原 90 分钟仅比实测最大值多 9 分钟余量，
+//   Actions 稍有排队就会误报「数据更新异常」—— 用户此前被这类误报反复打扰）；
+//   事件陈旧阈值取 240 分钟（事件源本身按更慢节奏更新）。
+//   真正细粒度的异常由 check_platform.js 的「平台同步失败 / 平台落后真源」覆盖。
+const PRICE_STALE_MIN = 120;  // 价格真源：Actions 实测 52~81 分钟一轮，留足排队余量
+const EVENT_STALE_MIN = 240;  // 事件：事件源本身按更慢节奏更新
 const REPEAT_ALERT_MS = 3 * 60 * 60 * 1000; // 持续异常：3 小时一条汇总
 const STATE_FILE = path.join(DATA, ".alert-state.json");
 const TIMEOUT_MS = 15000;
