@@ -54,6 +54,10 @@ const MIME = {
 // 内存缓存：{ file -> { body, at, updatedAt } }，生成完成后整体刷新
 const cache = {};
 let lastGenAt = 0;
+// 【C43】进程启动时刻（固定不变）：供巡检区分「平台刚启动还没同步完」
+//   与「平台跑了一阵仍然同步失败」——两者在 health 上的指纹完全一样，
+//   只能靠「启动多久了」区分。冷启动宽限 20 分钟内不算故障，超时才算。
+const PROCESS_START_AT = Date.now();
 let lastGenOk = false;
 let lastError = "";
 // 【C43】镜像池探测结果（替代 C19 的「平台主动推送 GH Pages」语义）：
@@ -414,6 +418,8 @@ const server = http.createServer(async (req, res) => {
       if (!ts["events.json"]) ts["events.json"] = ts["events.meta.json"] || "";
       sendJSON(res, 200, {
         ok: true, role: "readonly-proxy", generatedAt: lastGenAt ? new Date(lastGenAt).toISOString() : null,
+        // 【C43】进程启动时刻：巡检用它区分「冷启动未同步完」与「真故障」
+        processStartAt: new Date(PROCESS_START_AT).toISOString(),
         // 【C43】字段语义澄清：lastGenOk 现在表示「最近一轮真源同步是否成功」，
         //   lastError 为最近一次失败原因（空串 = 当前无异常）。
         //   C37 之前这两个字段表示「平台本地生成器」状态，平台已纯只读，故语义已变但字段名保留
