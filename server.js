@@ -16,7 +16,6 @@ const http = require("http");
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
-const { execFile } = require("child_process");
 
 const ROOT = __dirname;
 const DATA = path.join(ROOT, "data");
@@ -24,14 +23,27 @@ const PORT = process.env.PORT || 3000;
 const HOST = "0.0.0.0";
 
 const FILES = ["gold.json", "silver.json", "copper.json", "meta.json", "events.json", "events.meta.json"];
-const GEN_INTERVAL_MS = 15 * 60 * 1000;   // 与数据发布节奏一致：每 15 分钟一版
-const GEN_TIMEOUT_MS = 180000;            // generate.js 单次运行超时（含多源抓取+校验）
-const GH_PAGES_CANON = "https://zsyong2026.github.io/metal-price-monitor/data";
-// 【C42】真源同步超时放宽到 30s 并支持重试：events.json 达 172KB，
-//   在平台沙箱→GH Pages 的慢链路上 12s 常超时失败，导致事件数据 404。
-//   放宽 + 重试后大文件也能稳定拉取；小文件（meta/events.meta）本就快，无副作用。
-const PROXY_TIMEOUT_MS = 30000;
-const PROXY_RETRY = 1;
+const GEN_INTERVAL_MS = 15 * 60 * 1000;   // 与数据发布节奏一致：每 15 分钟同步一次真源
+// 【C43·根治牵一发而动全身】拉真源的分档超时：
+//   探针（meta.json，2.5KB）8s —— 只为快速判断「哪个镜像通」；
+//   正文文件 25s —— events.json 约 180KB，慢链路要给足；
+//   整轮同步硬预算 150s —— 无论如何必须 settle，绝不允许无限挂起。
+const PROBE_TIMEOUT_MS = 8000;
+const FILE_TIMEOUT_MS = 25000;
+const SYNC_BUDGET_MS = 150000;
+
+// ------------------------------------------------------------------
+// 【C43】真源镜像池：按顺序探测，取「最新的一个」为准。
+//   GH Pages   —— Actions 直推的主出口（权威、CDN 缓存最短）
+//   jsDelivr   —— GitHub 公共 CDN 的第二出口（main 分支同一份 data/，已实测同新鲜度）
+//   raw        —— 第三出口（raw.githubusercontent）
+//   单一出口被墙 / 黑洞 / CDN 回退到陈旧副本，都不再拖垮整条链路。
+// ------------------------------------------------------------------
+const CANON_MIRRORS = [
+  { name: "gh-pages", base: "https://zsyong2026.github.io/metal-price-monitor/data" },
+  { name: "jsdelivr", base: "https://cdn.jsdelivr.net/gh/zsyong2026/metal-price-monitor@main/data" },
+  { name: "raw-gh", base: "https://raw.githubusercontent.com/zsyong2026/metal-price-monitor/main/data" },
+];
 
 const MIME = {
   ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
@@ -44,32 +56,31 @@ const cache = {};
 let lastGenAt = 0;
 let lastGenOk = false;
 let lastError = "";
-let generating = false;
-// C19 镜像状态：平台生成后直推 GitHub Pages（微信 UA 唯一可读的公共静态源）
-// 【C24】增加 credState：区分「凭据失效(401)」「网络/其它错误」——
-//   GH PAT 到期是本项目最可能的单点故障（一旦失效 → GH Pages 停更 →
-//   微信端读到旧数据），必须让巡检一眼看出是「要换 PAT」而非「网络抖动」。
+// 【C43】镜像池探测结果（替代 C19 的「平台主动推送 GH Pages」语义）：
+//   平台现在是纯只读代理，mirror 表示「本轮从哪个真源镜像取到了数据」。
 let mirror = { ok: false, at: 0, error: "", commit: "", ms: 0, credState: "" };
-// 【C24】GitHub 凭据状态（ok / expired / missing / error / network）
+// 【C43】真源可达性状态（替代 C24 的 PAT 预检）：
+//   平台不再持 PAT、不再推送，故不再需要凭据预检；改为如实汇报镜像池可达性。
 let cred = { state: "unknown", detail: "" };
 
-const GH_REPO = "zsyong2026/metal-price-monitor";
-
 // ------------------------------------------------------------------
-// C19：真源镜像推送（解决「三端更新时间差 20 分钟」）
+// 【C43·删除】C19 时代的「平台直推 GH Pages」整条链路：
+//   ghToken() / checkCredential() / ghApi() / pushMirror() / triggerActions()
 //
-// 背景：微信内置浏览器的 UA 含 MicroMessenger → 平台网关按 UA 鉴权返回 403，
-//   故手机网页（微信内打开）与「已发布的小程序」实际读的是 GitHub Pages。
-//   而 GitHub Pages 原先靠 Actions 的 schedule 刷新 —— 那个定时器对低活跃仓库
-//   会严重延迟甚至停摆（实测 5 次触发 0 次提交，且非快进 push 被拒）→ 镜像停在 11:05。
-//   结果：PC 读平台（11:25）、手机/小程序读 GH Pages（11:05），三端时间戳对不上。
+//   为什么必须删干净（不是「留着不用」）：
+//   ① 这套代码是「一处抖动 → 全链路污染」的**闭环开关**。平台拿 PAT 直推 GH Pages，
+//      一旦平台自己算出了偏差数据（沙箱网络受限），就会把坏数据反推成「真源」，
+//      污染所有读 GH Pages 的设备（手机网页 / 已发布小程序 / PC 兜底）——
+//      这正是「不能报一次问题，牵一发而动全身」最恶劣的一种形态：真源被污染后，
+//      连「回退到真源」这条退路都没了。
+//   ② 现在真源唯一写入者是 GitHub Actions（permissions: contents: write + 自动 GITHUB_TOKEN），
+//      平台不再需要任何 PAT。留着这段代码，就留着把平台重新接回「写入真源」通路的能力。
+//   ③ GitHub PAT 是长期凭据，平台沙箱持有它就等于持有「改真源」的钥匙；
+//      纯只读代理不该持有写凭据。删除后平台只需 .env 里的 token 做只读镜像访问，
+//      且 mirror/cred 字段语义改为如实汇报「镜像池可达性」。
 //
-// 方案：平台生成器（24h 在线、setInterval 可靠）生成完就**直接调 GitHub REST API 推送**
-//   data/*.json 到 GH Pages —— 不再依赖 Actions 的定时调度（Actions 改为只做健康巡检）。
-//   推的是同一份字节，meta.generatedAt 与平台完全一致 → 三端显示同一个更新时间。
-//
-// 凭据：优先环境变量 GH_TOKEN；否则读项目根目录 .env（部署时随源码上传进沙箱）。
-//   注意：.env 不在 dist-ghpages/ 内，故不会随静态包发布到公开仓库。
+//   保留的只有 ghToken() —— 它现在仅用于从 .env 读 token 以便（若需要）做只读镜像请求；
+//   平台不会用它做任何写操作。
 // ------------------------------------------------------------------
 function ghToken() {
   if (process.env.GH_TOKEN) return String(process.env.GH_TOKEN).trim();
@@ -81,96 +92,6 @@ function ghToken() {
     }
   } catch (e) { /* ignore */ }
   return "";
-}
-
-// 【C24】凭据主动预检：不等镜像推送失败才发现 PAT 已失效。
-//   PAT 到期是本项目最可能的单点故障——失效后 GH Pages 停更，
-//   而 GH Pages 仍是手机网页/已发布小程序**唯一可直连**的公开静态源。
-//   故每轮生成前先用一个轻量请求（GET /user）验证凭据，
-//   把「401 失效」提前暴露到 /api/health 与巡检告警，而不是等到推送才报错。
-async function checkCredential() {
-  const token = ghToken();
-  if (!token) return { state: "missing", detail: "未配置 GH_TOKEN（检查 .env）" };
-  try {
-    const res = await fetch("https://api.github.com/user", {
-      headers: {
-        Authorization: "Bearer " + token,
-        Accept: "application/vnd.github+json",
-        "User-Agent": "metals-canon-server",
-        "X-GitHub-Api-Version": "2022-11-28",
-      },
-    });
-    if (res.status === 401) {
-      return { state: "expired", detail: "HTTP 401 Bad credentials（PAT 已到期或被吊销）" };
-    }
-    if (!res.ok) return { state: "error", detail: "HTTP " + res.status };
-    const j = await res.json().catch(() => ({}));
-    return { state: "ok", detail: j.login ? ("login=" + j.login) : "" };
-  } catch (e) {
-    return { state: "network", detail: (e && e.message) || String(e) };
-  }
-}
-
-async function ghApi(method, apiPath, body) {
-  const token = ghToken();
-  if (!token) throw new Error("no-token");
-  const res = await fetch("https://api.github.com" + apiPath, {
-    method: method,
-    headers: {
-      Authorization: "Bearer " + token,
-      Accept: "application/vnd.github+json",
-      "User-Agent": "metals-canon-server",
-      "X-GitHub-Api-Version": "2022-11-28",
-      ...(body ? { "Content-Type": "application/json" } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const txt = await res.text();
-  if (!res.ok) throw new Error(method + " " + apiPath + " -> HTTP " + res.status + " " + txt.slice(0, 200));
-  return txt ? JSON.parse(txt) : null;
-}
-
-// 把本地生成的 data/*.json 推送到 GH Pages（base_tree 继承 → 快进提交，不重写历史）
-// 并发安全：静态包发布也会动 main（两者撞车 → 非快进被拒）→ 失败后重读 ref 重试一次。
-async function pushMirror() {
-  const t0 = Date.now();
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const ref = await ghApi("GET", "/repos/" + GH_REPO + "/git/ref/heads/main");
-      const baseCommit = ref.object.sha;
-      const baseTree = (await ghApi("GET", "/repos/" + GH_REPO + "/git/commits/" + baseCommit)).tree.sha;
-      const entries = [];
-      for (const f of FILES) {
-        const body = fs.readFileSync(filePath(f), "utf-8");
-        const blob = await ghApi("POST", "/repos/" + GH_REPO + "/git/blobs", {
-          content: Buffer.from(body, "utf-8").toString("base64"), encoding: "base64",
-        });
-        entries.push({ path: "data/" + f, mode: "100644", type: "blob", sha: blob.sha });
-      }
-      const tree = await ghApi("POST", "/repos/" + GH_REPO + "/git/trees", { base_tree: baseTree, tree: entries });
-      const commit = await ghApi("POST", "/repos/" + GH_REPO + "/git/commits", {
-        message: "chore: 同步真源数据 " + new Date().toISOString(),
-        tree: tree.sha, parents: [baseCommit],
-      });
-      await ghApi("PATCH", "/repos/" + GH_REPO + "/git/refs/heads/main", { sha: commit.sha });
-      mirror = { ok: true, at: Date.now(), error: "", commit: String(commit.sha).slice(0, 8), ms: Date.now() - t0, credState: "" };
-      console.log("[mirror] 已推送 GH Pages：" + mirror.commit + "（" + mirror.ms + "ms）");
-      return;
-    } catch (e) {
-      const msg = (e && e.message) || String(e);
-      // 409/422 = ref 被别人推进（并发推送）→ 重读后重试；其它错误（如 401 凭据失效）直接放弃
-      if (attempt < 3 && /HTTP (409|422)/.test(msg)) {
-        console.warn("[mirror] main 被并发推进，重试第 " + (attempt + 1) + " 次");
-        await new Promise((r) => setTimeout(r, 1500));
-        continue;
-      }
-      // 【C24】识别 GitHub 凭据失效（PAT 过期/被吊销 → HTTP 401 Bad credentials）
-      const credState = /HTTP 401|Bad credentials/i.test(msg) ? "expired" : "";
-      mirror = { ok: false, at: Date.now(), error: msg, commit: "", ms: Date.now() - t0, credState };
-      console.warn("[mirror] 推送失败：" + mirror.error + (credState ? "（GitHub 凭据失效，需更换 GH_TOKEN）" : ""));
-      return;
-    }
-  }
 }
 
 function filePath(f) { return path.join(DATA, f); }
@@ -197,116 +118,149 @@ function safeParse(body) {
   try { return JSON.parse(body); } catch (e) { return null; }
 }
 
-// 本地生成：spawn `node generate-all.js`（与本服务同仓库，自包含无外部 key）
-// 用 generate-all.js 而非 generate.js：后者只出价格、不刷新重大事件，
-// 会导致「价格时间前进、事件时间停更」的三端不一致（用户反馈 09:14 卡死）。
-function generateLocal() {
-  if (generating) return Promise.resolve(false);
-  generating = true;
+// 【C43·删除】本地生成器 generateLocal() —— 平台已彻底转为纯只读代理。
+//   它是本次事故的「污染源」：真源拉取一旦失败就退化为本地生成，
+//   用沙箱受限网络下的残缺数据覆盖磁盘好数据，再经 pushMirror 反推 GH Pages，
+//   形成「一处抖动 → 全链路污染」的闭环。保留即保留引信，故整段移除。
+
+// ------------------------------------------------------------------
+// 【C43·根治「牵一发而动全身」】取真源：多镜像 + 硬超时 + 新鲜度守卫
+//
+// 【事故复盘 · 本次线上告警的真实根因】
+//   旧实现用 https.get(url, { timeout }) 拉 GH Pages。Node 的这个 timeout
+//   **只约束 socket 的空闲时间，不覆盖 DNS 解析与 TCP 建连**。
+//   平台沙箱出网对部分域名是「黑洞丢包」：连接既不建立也不返回错误，
+//   于是既不触发 'timeout' 也不触发 'error' → Promise 永不 settle →
+//   Promise.all 永不 resolve → syncFromPages() 永不返回 →
+//   refresh() 走不到任何赋值语句 → /api/health 里
+//   lastGenOk / lastError / mirror.at / credential.state **四个状态量同时停在初始值**
+//   （这正是本次事故的判定指纹）→ 平台只能吐出部署时烘焙的旧快照 →
+//   check_platform 每轮判「平台落后真源」→ 告警风暴。
+//
+// 【三层修复】
+//   ① 硬超时：自建 setTimeout 主动 destroy 请求，覆盖 DNS+建连+响应全过程，
+//      保证「任何情况下 Promise 必定 settle」。
+//   ② 多镜像：GH Pages / jsDelivr / raw 三路探针取最新一路，单一出口故障不再拖垮全局。
+//   ③ 新鲜度守卫：只接受不比现有缓存更旧的数据，CDN 回退到陈旧副本也不会把好数据顶掉。
+// ------------------------------------------------------------------
+
+// 单次 HTTP GET（文本）。自带覆盖 DNS/建连/响应的硬超时，绝不无限挂起。
+function httpGetText(url, timeoutMs) {
   return new Promise((resolve) => {
-    const t0 = Date.now();
-    const child = execFile("node", [path.join(ROOT, "generate-all.js")], {
-      cwd: ROOT,
-      timeout: GEN_TIMEOUT_MS,
-      env: Object.assign({}, process.env, { NODE_ENV: "production" }),
-    }, (err, stdout, stderr) => {
-      generating = false;
-      if (err) {
-        lastError = "本地生成失败：" + (err.message || String(err));
-        console.warn("[gen] " + lastError);
-        resolve(false);
-        return;
-      }
-      // 读取落盘结果，校验 6 个文件齐备且合法
-      let ok = 0;
-      const next = {};
-      for (const f of FILES) {
-        const d = readDisk(f);
-        if (d && safeParse(d.body)) { next[f] = d; ok++; }
-      }
-      if (ok === FILES.length) {
-        for (const f of FILES) cache[f] = { body: next[f].body, at: Date.now(), updatedAt: next[f].updatedAt };
-        lastGenAt = Date.now();
-        lastGenOk = true;
-        lastError = "";
-        console.log("[gen] 本地生成完成：" + FILES.length + " 文件，" + ((Date.now() - t0) / 1000).toFixed(1) + "s");
-        resolve(true);
-      } else {
-        lastError = "生成后文件校验不全（" + ok + "/" + FILES.length + "）";
-        console.warn("[gen] " + lastError);
-        resolve(false);
-      }
-    });
+    let settled = false;
+    let req = null;
+    const done = (v) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(v);
+    };
+    const timer = setTimeout(() => {
+      try { if (req) req.destroy(); } catch (e) { /* ignore */ }
+      done(null);
+    }, timeoutMs);
+    try {
+      req = https.get(url, { headers: { "User-Agent": "metals-canon/1.0" } }, (res) => {
+        if (res.statusCode !== 200) { res.resume(); done(null); return; }
+        let body = "";
+        res.setEncoding("utf-8");
+        res.on("data", (c) => { body += c; });
+        res.on("end", () => done(body || null));
+        res.on("error", () => done(null));
+      });
+      req.on("error", () => done(null));
+      req.on("timeout", () => { try { req.destroy(); } catch (e) { /* ignore */ } done(null); });
+    } catch (e) {
+      done(null);
+    }
   });
 }
 
-// GH Pages 真源代理（本地生成失败时的兜底；其仍由 Actions 不定期刷新）
-function fetchUpstreamOnce(f) {
-  return new Promise((resolve) => {
-    const url = GH_PAGES_CANON + "/" + f + "?_ts=" + Date.now();
-    const req = https.get(url, { timeout: PROXY_TIMEOUT_MS }, (res) => {
-      if (res.statusCode !== 200) { res.resume(); resolve(null); return; }
-      let body = "";
-      res.setEncoding("utf-8");
-      res.on("data", (c) => { body += c; });
-      res.on("end", () => resolve(body || null));
-    });
-    req.on("timeout", () => { req.destroy(); resolve(null); });
-    req.on("error", () => resolve(null));
+// 探测各镜像的可用性与新鲜度（meta.json 仅 2.5KB，8s 足够）
+async function probeMirrors() {
+  const probes = await Promise.all(CANON_MIRRORS.map(async (m) => {
+    const body = await httpGetText(m.base + "/meta.json?_ts=" + Date.now(), PROBE_TIMEOUT_MS);
+    if (!body) return { name: m.name, base: m.base, ok: false, generatedAt: "" };
+    const j = safeParse(body);
+    return { name: m.name, base: m.base, ok: !!j, generatedAt: (j && j.generatedAt) || "" };
+  }));
+  // 可用的按新鲜度倒序；同新鲜度时保持声明顺序（GH Pages 优先）
+  probes.sort((a, b) => {
+    if (a.ok !== b.ok) return a.ok ? -1 : 1;
+    if (a.ok && a.generatedAt !== b.generatedAt) return a.generatedAt < b.generatedAt ? 1 : -1;
+    return CANON_MIRRORS.findIndex((m) => m.name === a.name) - CANON_MIRRORS.findIndex((m) => m.name === b.name);
   });
+  return probes;
 }
 
-// 【C42】大文件（events.json 172KB）在慢链路偶尔超时：失败时重试一次，提升同步成功率
-async function fetchUpstream(f) {
-  let last = null;
-  for (let i = 0; i <= PROXY_RETRY; i++) {
-    last = await fetchUpstreamOnce(f);
-    if (last) return last;
+// 从镜像池取单个文件：按探针顺序逐个尝试，任一成功即返回
+async function fetchFromMirrors(file, probes) {
+  for (const p of probes) {
+    if (!p.ok) continue;
+    const body = await httpGetText(p.base + "/" + file + "?_ts=" + Date.now(), FILE_TIMEOUT_MS);
+    if (body && safeParse(body)) return { body, source: p.name };
   }
-  return null;
+  return { body: null, source: "" };
 }
 
-// 触发 GitHub Actions 刷新（需 GH_TOKEN 环境变量；可选，让 GH Pages 兜底也保持新鲜）
-function triggerActions() {
-  const token = process.env.GH_TOKEN;
-  if (!token) return;
-  const body = JSON.stringify({ ref: "main" });
-  const req = https.request({
-    hostname: "api.github.com",
-    path: "/repos/zsyong2026/metal-price-monitor/actions/workflows/refresh.yml/dispatches",
-    method: "POST",
-    headers: {
-      "Authorization": "Bearer " + token,
-      "Accept": "application/vnd.github+json",
-      "User-Agent": "metals-canon-server",
-      "Content-Type": "application/json",
-    },
-  }, (res) => { res.resume(); });
-  req.on("error", () => {});
-  req.write(body);
-  req.end();
-}
+// 【C43·删除】triggerActions() —— 平台主动 dispatch 刷新 Actions 的能力。
+//   真源刷新节奏由 Actions 自己的 schedule 决定（实测约每小时一轮），
+//   平台再去 dispatch 只会与 schedule 撞车、放大 Actions 排队（实测曾出现
+//   一次 push 触发 4 个 pages build、3 个被取消的噪音）。
+//   平台职责收敛为「只读真源 + 托管站点 + 如实健康上报」，不再有写/调度真源的能力。
 
 // 【C37 架构调整】数据真源改由 GitHub Actions 生成（东财/新浪实时均可达）并推送 GH Pages；
 // 平台沙箱网络受限（东财被墙、hq.sinajs.cn 被墙），自身无法产出当日实时国内价，
 // 故平台退化为「只读真实数据 + 托管站点 + 健康上报」，不再本地生成/推送 data/
-// （避免用受限网络下的陈旧/偏差数据覆盖 Actions 产出的真源）。仅在 GH Pages 真源不可达时，
-// 才退化为本地尽力生成并推送兜底。
+// （避免用受限网络下的陈旧/偏差数据覆盖 Actions 产出的真源）。
+//
+// 【C43】refresh 自愈化：
+//   ① 全局硬预算：即便内层逻辑再出意外，整轮也必须在 SYNC_BUDGET_MS 内 settle，
+//      绝不让 Promise 悬空（悬空 = 状态量停在初始值 = 平台只吐旧快照）。
+//   ② 串行调度：上一轮没结束就不开下一轮（setInterval 会堆积任务）。
+//   ③ 失败退避重试：失败后 60s 重试（而不是干等 15 分钟），成功则回到正常节奏。
 async function refresh() {
-  const ok = await syncFromPages();
+  const t0 = Date.now();
+  let ok = false;
+  try {
+    // 硬预算兜底：任何异常/挂起都在此收敛
+    ok = await Promise.race([
+      syncFromPages(),
+      new Promise((resolve) => setTimeout(() => resolve(false), SYNC_BUDGET_MS)),
+    ]);
+  } catch (e) {
+    ok = false;
+    lastError = "真源同步异常：" + ((e && e.message) || String(e));
+    console.warn("[refresh] " + lastError);
+  }
   if (ok) {
     lastGenOk = true;
-    lastError = "（只读 GH Pages 真源，由 Actions 每 15 分钟生成）";
-    return;
+    lastError = "（只读真源镜像池，由 GitHub Actions 每轮生成）";
+    return true;
   }
-  // 【C42 彻底修复·牵一发不动全身】GH Pages 真源同步失败：平台沙箱网络受限，本地生成无法获取
+  // 【C42 彻底修复·牵一发不动全身】真源同步失败：平台沙箱网络受限，本地生成无法获取
   //   实时行情（东财/新浪被墙），若退化为 generateLocal() 反而会用陈旧/偏差数据覆盖缓存、
   //   乃至 pushMirror 反推 GH Pages，造成连环污染（实测 events.json 曾因此被覆盖成残缺/旧数据而 404）。
   //   故同步失败时，平台只如实标记 lastGenOk=false 并继续服务「上一轮成功缓存 / 部署快照」，
   //   绝不本地生成。真源由 GitHub Actions 维护并直推 GH Pages，平台保持纯只读代理。
   lastGenOk = false;
-  lastError = lastError || "GH Pages 真源同步失败（平台仅只读，不本地生成）";
-  console.warn("[refresh] GH Pages 真源同步失败，平台仅服务上一轮缓存/部署快照（不本地生成）");
+  lastError = lastError || "真源同步失败（平台仅只读，不本地生成）";
+  console.warn("[refresh] 真源同步失败，平台仅服务上一轮缓存/部署快照（不本地生成），耗时 " + (Date.now() - t0) + "ms");
+  return false;
+}
+
+// 【C43】自愈调度器：串行执行 + 失败退避重试。
+//   取代原来的 setInterval(refresh, 15min)——后者在 refresh 挂起时会不断堆积新任务，
+//   既是本次事故的放大器，也是修复后仍可能残留的隐患。
+const RETRY_DELAY_MS = 60 * 1000;
+let refreshTimer = null;
+function scheduleRefresh(delayMs) {
+  if (refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(async () => {
+    refreshTimer = null;
+    const ok = await refresh();
+    scheduleRefresh(ok ? GEN_INTERVAL_MS : RETRY_DELAY_MS);
+  }, delayMs);
 }
 
 // 核心四件套（价格 + 元信息）：缺失任一份都视为真源不可用，必须阻塞并告警。
@@ -318,19 +272,62 @@ async function refresh() {
 const CORE_FILES = ["gold.json", "silver.json", "copper.json", "meta.json"];
 const OPTIONAL_FILES = ["events.json", "events.meta.json"];
 
-// 从 GH Pages 真源同步数据到本地缓存（平台只读，不写回 data/）
+// 【C43】新鲜度守卫：只接受不比现有缓存更旧的数据。
+//   CDN 偶发回退到陈旧副本时，若无条件覆盖，好数据会被旧数据顶掉（另一种「牵一发而动全身」）。
+function isNotOlder(newTs, oldTs) {
+  if (!newTs) return true;              // 新数据没有时间戳 → 不做判断（交给其它校验）
+  if (!oldTs) return true;
+  const a = Date.parse(newTs), b = Date.parse(oldTs);
+  if (isNaN(a) || isNaN(b)) return true;
+  return a >= b;
+}
+
+// 从真源镜像池同步数据到本地缓存（平台只读，不写回 data/）
 async function syncFromPages() {
+  const t0 = Date.now();
+  const probes = await probeMirrors();
+  const usable = probes.filter((p) => p.ok);
+  mirror = {
+    ok: usable.length > 0,
+    at: Date.now(),
+    error: usable.length ? "" : "全部镜像不可达",
+    commit: usable.length ? ("(" + usable.map((p) => p.name).join(",") + ")") : "",
+    ms: Date.now() - t0,
+    credState: "",
+  };
+  cred = {
+    state: usable.length ? "ok" : "network",
+    detail: usable.length
+      ? ("真源镜像可用：" + usable.map((p) => p.name + "@" + (p.generatedAt || "?")).join(" | "))
+      : "三路真源镜像（GH Pages / jsDelivr / raw）全部不可达",
+  };
+  if (!usable.length) {
+    lastError = "真源镜像池全部不可达（GH Pages / jsDelivr / raw）";
+    console.warn("[sync] " + lastError);
+    return false;
+  }
+
   const all = CORE_FILES.concat(OPTIONAL_FILES);
-  const results = await Promise.all(all.map((f) => fetchUpstream(f)));
+  // 每个文件独立取，任一失败只影响该文件；整轮受硬预算约束，必定 settle
+  const results = await Promise.all(all.map((f) => fetchFromMirrors(f, usable)));
   const next = {};
   let coreOk = 0;
   for (let i = 0; i < all.length; i++) {
     const f = all[i];
-    if (results[i] && safeParse(results[i])) next[f] = results[i];
-    if (CORE_FILES.indexOf(f) >= 0 && next[f]) coreOk++;
+    const r = results[i];
+    if (!r || !r.body || !safeParse(r.body)) continue;
+    const oldTs = (cache[f] && cache[f].updatedAt) || (readDisk(f) || {}).updatedAt || "";
+    const newTs = updatedAtOf(f, r.body);
+    if (!isNotOlder(newTs, oldTs)) {
+      console.warn("[sync] " + f + " 新数据比现有缓存更旧（" + newTs + " < " + oldTs + "），保留现有缓存");
+      continue;
+    }
+    next[f] = r.body;
+    if (CORE_FILES.indexOf(f) >= 0) coreOk++;
   }
   if (coreOk < CORE_FILES.length) {
-    lastError = "GH Pages 真源核心数据缺失（" + coreOk + "/" + CORE_FILES.length + "）";
+    lastError = "真源核心数据缺失（" + coreOk + "/" + CORE_FILES.length + "），镜像：" +
+      usable.map((p) => p.name).join(",");
     console.warn("[sync] " + lastError);
     return false;
   }
@@ -341,15 +338,14 @@ async function syncFromPages() {
       cache[f] = { body: next[f], at: Date.now(), updatedAt: updatedAtOf(f, next[f]) };
     } else {
       kept++;
-      console.warn("[sync] 可选文件 " + f + " 本次未取到，沿用上一轮缓存（不阻塞核心数据）");
+      console.warn("[sync] 文件 " + f + " 本次未取到，沿用上一轮缓存（不阻塞核心数据）");
     }
   }
   lastGenAt = Date.now();
-  // 数据由 Actions 管理，平台只读；镜像状态标记为「真源在 GH Pages（Actions 维护）」
-  mirror = { ok: true, at: Date.now(), error: "", commit: "(actions)", ms: 0, credState: "" };
-  cred = { state: "ok", detail: "data 由 GitHub Actions 生成并推送 GH Pages，平台只读" };
-  console.log("[sync] 已从 GH Pages 真源同步核心 " + coreOk + "/" + CORE_FILES.length +
-    "，可选沿用缓存 " + kept + "/" + OPTIONAL_FILES.length);
+  console.log("[sync] 已从真源镜像池同步核心 " + coreOk + "/" + CORE_FILES.length +
+    "，可选沿用缓存 " + kept + "/" + OPTIONAL_FILES.length +
+    "，来源 " + usable.map((p) => p.name).join(",") +
+    "，耗时 " + (Date.now() - t0) + "ms");
   return true;
 }
 
@@ -412,18 +408,32 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/health") {
       const ts = {};
       for (const f of FILES) ts[f] = (cache[f] && cache[f].updatedAt) || (readDisk(f) || {}).updatedAt || "";
+      // 【C43】events.json 本身无时间戳（只有 gold/silver/copper 三个数组），
+      //   但它与 events.meta.json 出自同一轮 Actions 生成，故回退用后者的 updatedAt，
+      //   否则健康面板上事件永远显示空值，看不出事件数据到底新不新。
+      if (!ts["events.json"]) ts["events.json"] = ts["events.meta.json"] || "";
       sendJSON(res, 200, {
         ok: true, role: "readonly-proxy", generatedAt: lastGenAt ? new Date(lastGenAt).toISOString() : null,
+        // 【C43】字段语义澄清：lastGenOk 现在表示「最近一轮真源同步是否成功」，
+        //   lastError 为最近一次失败原因（空串 = 当前无异常）。
+        //   C37 之前这两个字段表示「平台本地生成器」状态，平台已纯只读，故语义已变但字段名保留
+        //   （外部巡检脚本与自测用例仍在读它们）。
         lastGenOk, lastError, updatedAt: ts,
-        // C19：GH Pages 镜像推送状态（微信 UA 唯一可读源的 freshness 取决于它）
+        // 【C43】真源镜像池探测结果（替代 C19 的「平台推送 GH Pages」语义）：
+        //   commit 字段现在承载「本轮命中了哪些镜像」，hasToken 保留但仅表示 token 存在性。
+        source: {
+          mirrors: mirror.commit ? mirror.commit.replace(/[()]/g, "").split(",").filter(Boolean) : [],
+          ok: mirror.ok, at: mirror.at ? new Date(mirror.at).toISOString() : null,
+          ms: mirror.ms, error: mirror.error,
+          hasToken: !!ghToken(),
+        },
+        // 保留旧字段形状，避免外部消费方（含自测）因结构变化而失效
         mirror: {
           ok: mirror.ok, at: mirror.at ? new Date(mirror.at).toISOString() : null,
           commit: mirror.commit, ms: mirror.ms, error: mirror.error,
-          hasToken: !!ghToken(),
-          // 【C24】"expired" = GitHub 凭据失效（PAT 到期/被吊销）→ 必须换 token
-          credState: mirror.credState || "",
+          hasToken: !!ghToken(), credState: mirror.credState || "",
         },
-        // 【C24】凭据预检结果（平台主动探测，比等推送失败更早暴露）
+        // 【C43】真源可达性（替代 C24 的 PAT 预检语义）
         credential: { state: cred.state, detail: cred.detail },
       });
       return;
@@ -449,17 +459,23 @@ const server = http.createServer(async (req, res) => {
   serveStatic(req, res, p);
 });
 
-// 启动：先读磁盘快照（冷启动即可用），随后立即生成一版，并每 15 分钟持续生成
+// 启动：先读磁盘快照（冷启动即可用），随后立即同步一轮真源，并按自愈调度器持续同步。
+// 【C43】不再用 setInterval(refresh, 15min)：那会在 refresh 挂起时无限堆积任务。
+//   改为「上一轮结束再排下一轮」，失败 60s 后重试（而不是干等 15 分钟），
+//   成功则回到 15 分钟节奏 —— 平台从「一挂就永久僵死」变成「失败即自愈」。
 (function boot() {
   for (const f of FILES) {
     const d = readDisk(f);
     if (d) cache[f] = { body: d.body, at: 0, updatedAt: d.updatedAt };
   }
-  refresh();
-  setInterval(refresh, GEN_INTERVAL_MS);
+  (async () => {
+    const ok = await refresh();
+    scheduleRefresh(ok ? GEN_INTERVAL_MS : RETRY_DELAY_MS);
+  })();
 })();
 
 server.listen(PORT, HOST, () => {
   console.log("[server] 只读代理已启动 http://" + HOST + ":" + PORT +
-    "（真源：GH Pages / GitHub Actions，每 " + (GEN_INTERVAL_MS / 60000) + " 分钟尝试从真源同步）");
+    "（真源：GH Pages / jsDelivr / raw 镜像池，由 GitHub Actions 生成；每 " + (GEN_INTERVAL_MS / 60000) +
+    " 分钟同步一次，失败则 " + (RETRY_DELAY_MS / 1000) + " 秒后自愈重试）");
 });
