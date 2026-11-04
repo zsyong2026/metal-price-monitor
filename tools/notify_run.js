@@ -35,20 +35,28 @@ const STATE_FILE = path.join(DATA, ".alert-state.json");
 const TIMEOUT_MS = 15000;
 
 // GH Pages 真源读取（与 check_platform.js 同口径：非 2xx 一律按不可达，避免把网关错误体当成功解析）
+// 【C43】与平台侧同源的隐患加固：req 先声明再引用（避免 TDZ）+ 统一 settle 出口 + 超时清定时器。
 function getJSON(url) {
   return new Promise((resolve) => {
-    const t = setTimeout(() => { try { req.destroy(); } catch (e) { /* ignore */ } resolve(null); }, TIMEOUT_MS);
-    const req = https.get(url, { headers: { "User-Agent": "metals-notify/1.0" } }, (res) => {
-      let body = "";
-      res.setEncoding("utf-8");
-      res.on("data", (c) => (body += c));
-      res.on("end", () => {
-        clearTimeout(t);
-        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) { resolve(null); return; }
-        try { resolve(JSON.parse(body)); } catch (e) { resolve(null); }
+    let req = null;
+    let settled = false;
+    const done = (v) => { if (settled) return; settled = true; clearTimeout(t); resolve(v); };
+    const t = setTimeout(() => { try { if (req) req.destroy(); } catch (e) { /* ignore */ } done(null); }, TIMEOUT_MS);
+    try {
+      req = https.get(url, { headers: { "User-Agent": "metals-notify/1.0" } }, (res) => {
+        let body = "";
+        res.setEncoding("utf-8");
+        res.on("data", (c) => (body += c));
+        res.on("end", () => {
+          if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) { done(null); return; }
+          try { done(JSON.parse(body)); } catch (e) { done(null); }
+        });
+        res.on("error", () => done(null));
       });
-    });
-    req.on("error", () => { clearTimeout(t); resolve(null); });
+      req.on("error", () => done(null));
+    } catch (e) {
+      done(null);
+    }
   });
 }
 
