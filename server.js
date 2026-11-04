@@ -299,23 +299,14 @@ async function refresh() {
     lastError = "（只读 GH Pages 真源，由 Actions 每 15 分钟生成）";
     return;
   }
-  // 【C42 健壮性】真源同步失败：如实标记 lastGenOk=false（旧逻辑从不置 false，会谎报健康——
-  //   曾出现 health 显示 lastGenOk:true 却又吐出 15h 旧价）。再尝试本地兜底生成；
-  //   仅当「真源 + 本地兜底」双失败时，health 才诚实报异常，巡检据此告警而非空转。
+  // 【C42 彻底修复·牵一发不动全身】GH Pages 真源同步失败：平台沙箱网络受限，本地生成无法获取
+  //   实时行情（东财/新浪被墙），若退化为 generateLocal() 反而会用陈旧/偏差数据覆盖缓存、
+  //   乃至 pushMirror 反推 GH Pages，造成连环污染（实测 events.json 曾因此被覆盖成残缺/旧数据而 404）。
+  //   故同步失败时，平台只如实标记 lastGenOk=false 并继续服务「上一轮成功缓存 / 部署快照」，
+  //   绝不本地生成。真源由 GitHub Actions 维护并直推 GH Pages，平台保持纯只读代理。
   lastGenOk = false;
-  lastError = lastError || "GH Pages 真源同步失败";
-  console.warn("[refresh] GH Pages 真源同步失败，尝试本地兜底生成");
-  const localOk = await generateLocal();
-  if (localOk) {
-    lastGenOk = true;
-    lastError = "（本地兜底生成成功，已推送 GH Pages 兜底）";
-    cred = await checkCredential();
-    if (cred.state === "ok") await pushMirror();
-  } else {
-    lastGenOk = false;
-    lastError = lastError || "GH Pages 真源同步失败且本地兜底生成也失败";
-    console.error("[refresh] 真源与本地兜底均失败，/api/health 将如实标记异常（不再谎报健康）");
-  }
+  lastError = lastError || "GH Pages 真源同步失败（平台仅只读，不本地生成）";
+  console.warn("[refresh] GH Pages 真源同步失败，平台仅服务上一轮缓存/部署快照（不本地生成）");
 }
 
 // 核心四件套（价格 + 元信息）：缺失任一份都视为真源不可用，必须阻塞并告警。
