@@ -27,7 +27,11 @@ const FILES = ["gold.json", "silver.json", "copper.json", "meta.json", "events.j
 const GEN_INTERVAL_MS = 15 * 60 * 1000;   // 与数据发布节奏一致：每 15 分钟一版
 const GEN_TIMEOUT_MS = 180000;            // generate.js 单次运行超时（含多源抓取+校验）
 const GH_PAGES_CANON = "https://zsyong2026.github.io/metal-price-monitor/data";
-const PROXY_TIMEOUT_MS = 12000;
+// 【C42】真源同步超时放宽到 30s 并支持重试：events.json 达 172KB，
+//   在平台沙箱→GH Pages 的慢链路上 12s 常超时失败，导致事件数据 404。
+//   放宽 + 重试后大文件也能稳定拉取；小文件（meta/events.meta）本就快，无副作用。
+const PROXY_TIMEOUT_MS = 30000;
+const PROXY_RETRY = 1;
 
 const MIME = {
   ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
@@ -237,7 +241,7 @@ function generateLocal() {
 }
 
 // GH Pages 真源代理（本地生成失败时的兜底；其仍由 Actions 不定期刷新）
-function fetchUpstream(f) {
+function fetchUpstreamOnce(f) {
   return new Promise((resolve) => {
     const url = GH_PAGES_CANON + "/" + f + "?_ts=" + Date.now();
     const req = https.get(url, { timeout: PROXY_TIMEOUT_MS }, (res) => {
@@ -250,6 +254,16 @@ function fetchUpstream(f) {
     req.on("timeout", () => { req.destroy(); resolve(null); });
     req.on("error", () => resolve(null));
   });
+}
+
+// 【C42】大文件（events.json 172KB）在慢链路偶尔超时：失败时重试一次，提升同步成功率
+async function fetchUpstream(f) {
+  let last = null;
+  for (let i = 0; i <= PROXY_RETRY; i++) {
+    last = await fetchUpstreamOnce(f);
+    if (last) return last;
+  }
+  return null;
 }
 
 // 触发 GitHub Actions 刷新（需 GH_TOKEN 环境变量；可选，让 GH Pages 兜底也保持新鲜）
