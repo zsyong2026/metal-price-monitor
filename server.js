@@ -285,36 +285,67 @@ async function refresh() {
     lastError = "（只读 GH Pages 真源，由 Actions 每 15 分钟生成）";
     return;
   }
-  // GH Pages 真源不可达：本地尽力生成（若东财/sina 可达则可出真实数据），成功则推送为兜底
+  // 【C42 健壮性】真源同步失败：如实标记 lastGenOk=false（旧逻辑从不置 false，会谎报健康——
+  //   曾出现 health 显示 lastGenOk:true 却又吐出 15h 旧价）。再尝试本地兜底生成；
+  //   仅当「真源 + 本地兜底」双失败时，health 才诚实报异常，巡检据此告警而非空转。
+  lastGenOk = false;
+  lastError = lastError || "GH Pages 真源同步失败";
   console.warn("[refresh] GH Pages 真源同步失败，尝试本地兜底生成");
   const localOk = await generateLocal();
   if (localOk) {
+    lastGenOk = true;
+    lastError = "（本地兜底生成成功，已推送 GH Pages 兜底）";
     cred = await checkCredential();
     if (cred.state === "ok") await pushMirror();
+  } else {
+    lastGenOk = false;
+    lastError = lastError || "GH Pages 真源同步失败且本地兜底生成也失败";
+    console.error("[refresh] 真源与本地兜底均失败，/api/health 将如实标记异常（不再谎报健康）");
   }
 }
 
-// 从 GH Pages 真源同步全部数据到本地缓存（平台只读，不写回 data/）
+// 核心四件套（价格 + 元信息）：缺失任一份都视为真源不可用，必须阻塞并告警。
+// 可选事件类（events.json / events.meta.json）：任一份瞬时失败 → 沿用上一轮缓存、不阻塞核心。
+// 【C42 根治「牵一发而动全身」】此前 syncFromPages 是「全有或全无」——
+//   只要 events.json 一次抖动（瞬间 404/超时），整轮同步被拒，平台死抱部署时的旧磁盘快照，
+//   全平台吐出 15h 旧价、check_platform 误报、所有读平台的设备看到旧价。
+//   改为核心齐备即接受、事件类失败仅保留旧缓存，把单点抖动隔离在「事件」局部。
+const CORE_FILES = ["gold.json", "silver.json", "copper.json", "meta.json"];
+const OPTIONAL_FILES = ["events.json", "events.meta.json"];
+
+// 从 GH Pages 真源同步数据到本地缓存（平台只读，不写回 data/）
 async function syncFromPages() {
-  const results = await Promise.all(FILES.map((f) => fetchUpstream(f)));
-  let ok = 0;
-  for (let i = 0; i < FILES.length; i++) {
-    if (results[i] && safeParse(results[i])) {
-      cache[FILES[i]] = { body: results[i], at: Date.now(), updatedAt: updatedAtOf(FILES[i], results[i]) };
-      ok++;
+  const all = CORE_FILES.concat(OPTIONAL_FILES);
+  const results = await Promise.all(all.map((f) => fetchUpstream(f)));
+  const next = {};
+  let coreOk = 0;
+  for (let i = 0; i < all.length; i++) {
+    const f = all[i];
+    if (results[i] && safeParse(results[i])) next[f] = results[i];
+    if (CORE_FILES.indexOf(f) >= 0 && next[f]) coreOk++;
+  }
+  if (coreOk < CORE_FILES.length) {
+    lastError = "GH Pages 真源核心数据缺失（" + coreOk + "/" + CORE_FILES.length + "）";
+    console.warn("[sync] " + lastError);
+    return false;
+  }
+  // 核心齐备即接受：事件类可选文件若本次未取到，沿用上一轮缓存（不阻塞核心数据）
+  let kept = 0;
+  for (const f of all) {
+    if (next[f]) {
+      cache[f] = { body: next[f], at: Date.now(), updatedAt: updatedAtOf(f, next[f]) };
+    } else {
+      kept++;
+      console.warn("[sync] 可选文件 " + f + " 本次未取到，沿用上一轮缓存（不阻塞核心数据）");
     }
   }
-  if (ok === FILES.length) {
-    lastGenAt = Date.now();
-    // 数据由 Actions 管理，平台只读；镜像状态标记为「真源在 GH Pages（Actions 维护）」
-    mirror = { ok: true, at: Date.now(), error: "", commit: "(actions)", ms: 0, credState: "" };
-    cred = { state: "ok", detail: "data 由 GitHub Actions 生成并推送 GH Pages，平台只读" };
-    console.log("[sync] 已从 GH Pages 真源同步 " + ok + " 份数据");
-    return true;
-  }
-  lastError = "GH Pages 真源同步不全（" + ok + "/" + FILES.length + "）";
-  console.warn("[sync] " + lastError);
-  return false;
+  lastGenAt = Date.now();
+  // 数据由 Actions 管理，平台只读；镜像状态标记为「真源在 GH Pages（Actions 维护）」
+  mirror = { ok: true, at: Date.now(), error: "", commit: "(actions)", ms: 0, credState: "" };
+  cred = { state: "ok", detail: "data 由 GitHub Actions 生成并推送 GH Pages，平台只读" };
+  console.log("[sync] 已从 GH Pages 真源同步核心 " + coreOk + "/" + CORE_FILES.length +
+    "，可选沿用缓存 " + kept + "/" + OPTIONAL_FILES.length);
+  return true;
 }
 
 function getBody(f) {
