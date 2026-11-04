@@ -41,6 +41,11 @@ const DRIFT_WARN_MIN = 60;
 //   视为「刚起来还没同步完」而非故障（避免部署后误报 + 无效处置建议）。
 //   超时仍未同步成功 → 判真故障。
 const COLD_START_GRACE_MIN = 20;
+// 【C44】平台采样次数：部署滚动更新窗口内新旧副本并存，单次采样会随机命中
+//   尚未同步好的新副本 → 误报「平台落后真源」（实测真发生过，且该告警会给出
+//   错误的处置建议「重发平台版」，把人引向反方向）。
+//   采样 4 次取「数据最新」的副本作为判定依据，兼顾准确与耗时（约 2 秒）。
+const PROBE_SAMPLES = 4;
 // 平台自报同步失败（lastGenOk=false）时，**无论漂移多少分钟都立即报**——
 //   这是最强的信号：平台自己都说没同步上，哪怕数据暂时还新鲜也该报（否则真源一旦
 //   同时停更，会因为"漂移还没超阈值"而静默，直到双故障叠加才暴露）。
@@ -75,6 +80,24 @@ function getJSON(url) {
   });
 }
 
+// ─────────────────────────────────────────────────────────────
+// 【C44】平台采样：连发 N 次请求，观察网关把流量分给了哪些实例。
+//   每次同时取 /api/health 与 /api/data/gold（同一次采样内尽量相邻，
+//   但仍可能落在不同副本上 → 因此两者都收，取 gold 的时间戳做参考）。
+//   目的：部署滚动更新期间存在新旧副本并存，单次采样会随机命中旧副本 → 误报。
+//   返回数组，调用方取「数据最新」的那份作为判定依据。
+// ─────────────────────────────────────────────────────────────
+async function samplePlatform(n) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const h = await getJSON("https://" + PLATFORM_HOST + "/api/health?sharecode=" + SHARE);
+    const g = await getJSON("https://" + PLATFORM_HOST + "/api/data/gold?sharecode=" + SHARE);
+    if (h) out.push(Object.assign({}, h, { gold: g }));
+    if (i < n - 1) await new Promise((r) => setTimeout(r, 400));
+  }
+  return out;
+}
+
 function ageMin(iso) {
   if (!iso) return NaN;
   const t = Date.parse(iso);
@@ -102,13 +125,38 @@ function ageMin(iso) {
     }
 
     // ── ② 平台吐出的数据是否与真源对齐 ──
-    const health = await getJSON("https://" + PLATFORM_HOST + "/api/health?sharecode=" + SHARE);
-    const gold = await getJSON("https://" + PLATFORM_HOST + "/api/data/gold?sharecode=" + SHARE);
+    //
+    // 【C44·多次采样取最优】此前只采样一次。实测在**部署滚动更新窗口**内，
+    //   网关会把请求分发到新旧两个实例：老实例吐旧部署快照（落后 133 分钟），
+    //   新实例已同步好（漂移 0）。单次采样随机命中老实例 → 误报「平台落后真源」，
+    //   而平台其实完全正常 —— 这类误报比真故障更伤，因为处置建议是「重发平台版」，
+    //   会把人引向错误方向（实际不需要任何处置）。
+    //   故改为：采样 N 次，按「数据最新」取最优副本作为判定依据；
+    //   同时记录是否见到副本不一致（有则作为 info 提示，不算故障）。
+    const samples = await samplePlatform(PROBE_SAMPLES);
+    const distinct = new Set(samples.map((s) => (s.processStartAt || "?") + "|" + ((s.updatedAt || {})["meta.json"] || "-")));
+    let health = null;
+    let gold = null;
+    for (const s of samples) {
+      if (!s) continue;
+      const sTs = ((s.updatedAt || {})["meta.json"]) || "";
+      const hTs = (health && ((health.updatedAt || {})["meta.json"] || "")) || "";
+      // 取「数据更新时间最新」的那份；同样新则取 lastGenOk=true 的那份
+      const better = !health
+        || (sTs > hTs)
+        || (sTs === hTs && s.lastGenOk === true && health.lastGenOk !== true);
+      if (better) { health = s; gold = s.gold; }
+    }
+    if (samples.length && distinct.size > 1) {
+      info.push("平台存在 " + distinct.size + " 个副本（部署滚动更新窗口内），已按数据最新的副本判定");
+      console.log("[platform] 副本分布：" + Array.from(distinct).join(" | "));
+    }
     if (!health) {
       problems.push("平台 /api/health 不可达（" + PLATFORM_HOST + "）");
     } else {
       console.log("[platform] role=" + health.role + " lastGenOk=" + health.lastGenOk +
-        " updatedAt.gold=" + ((health.updatedAt || {})["gold.json"] || "-"));
+        " updatedAt.gold=" + ((health.updatedAt || {})["gold.json"] || "-") +
+        "（采样 " + samples.filter(Boolean).length + " 次）");
       if (health.role && health.role !== "readonly-proxy") {
         info.push("平台仍运行旧架构（role=" + health.role + "），建议重发 C37 只读代理版");
       }
