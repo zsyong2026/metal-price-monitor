@@ -46,6 +46,11 @@ const COLD_START_GRACE_MIN = 20;
 //   错误的处置建议「重发平台版」，把人引向反方向）。
 //   采样 4 次取「数据最新」的副本作为判定依据，兼顾准确与耗时（约 2 秒）。
 const PROBE_SAMPLES = 4;
+// 【C44】真源读取的重试确认：Actions runner 偶发网络抖动会让单次读取失败，
+//   而真源是"最不该误报"的对象（它一挂全端受影响，误报代价高）。
+//   单次失败 → 重试 2 次（间隔 2.5 秒）；仍失败才判「真源不可达」。
+const CANON_RETRY = 2;
+const CANON_RETRY_GAP_MS = 2500;
 // 平台自报同步失败（lastGenOk=false）时，**无论漂移多少分钟都立即报**——
 //   这是最强的信号：平台自己都说没同步上，哪怕数据暂时还新鲜也该报（否则真源一旦
 //   同时停更，会因为"漂移还没超阈值"而静默，直到双故障叠加才暴露）。
@@ -110,9 +115,23 @@ function ageMin(iso) {
   const info = [];
 
   // ── ① 真源 GH Pages 新鲜度（最关键）──
-  const canon = await getJSON(GH_PAGES_CANON + "/meta.json");
+  //
+  // 【C44·重试确认】单次取不到真源就报「真源异常」过于敏感：
+  //   实测 Actions runner 偶发一次网络抖动（前一秒刚成功读到），巡检就立刻告警。
+  //   真源是"最不该误报"的对象 —— 它一旦真挂，所有设备（手机网页/小程序/PC）都受影响，
+  //   误报的代价是让人以为整条链路崩了，而实际只需等下一轮。
+  //   故：单次失败先重试（最多 CANON_RETRY 次、间隔 CANON_RETRY_GAP_MS），
+  //   仍失败才判「真源不可达」；若期间任一次成功 → 完全正常。
+  let canon = null;
+  let canonAttempts = 0;
+  for (let i = 0; i <= CANON_RETRY; i++) {
+    canonAttempts++;
+    canon = await getJSON(GH_PAGES_CANON + "/meta.json");
+    if (canon) break;
+    if (i < CANON_RETRY) await new Promise((r) => setTimeout(r, CANON_RETRY_GAP_MS));
+  }
   if (!canon) {
-    problems.push("【真源异常】GH Pages 元数据不可达（" + GH_PAGES_CANON + "/meta.json），" +
+    problems.push("【真源异常】GH Pages 元数据不可达（已重试 " + canonAttempts + " 次，" + GH_PAGES_CANON + "/meta.json），" +
       "GitHub Actions（refresh.yml）可能未运行或网络故障，手机网页与已发布小程序会读到旧数据");
   } else {
     const age = ageMin(canon.generatedAt);
