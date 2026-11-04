@@ -1,0 +1,142 @@
+/* 全局样式：与网页版同一套设计变量（三端视觉一致） */
+page {
+  --bg: #f5f6f8;
+  --card: #ffffff;
+  --ink: #1a1d24;
+  --ink-soft: #5b6472;
+  --line: #e6e9ef;
+  --gold: #d4a017;
+  --gold-deep: #b8860b;
+  --copper: #b5651d;
+  --up: #e6432d;      /* 涨·红（国内惯例） */
+  --down: #0f9d58;    /* 跌·绿（国内惯例） */
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 14px;
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+
+view, text, button, scroll-view { box-sizing: border-box; }
+
+.card {
+  background: var(--card);
+  border-radius: 12px;
+  padding: 12px;
+  margin: 12px;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06);
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 16px;
+}
+.chip {
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-soft);
+  border: 1px solid var(--line);
+  line-height: 1.5;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+}
+/* 三端统一：选中态与网页版一致（金色渐变实心 + 白字） */
+.chip.active {
+  background: linear-gradient(135deg, var(--gold), var(--copper));
+  color: #fff;
+  border-color: transparent;
+  font-weight: 600;
+}
+
+/* 金属 tab（金/银/铜）：与网页版 .tab 同款下划线风格——选中=金棕字 + 底部金铜渐变指示条，
+   不再是胶囊气泡，避免与下方粒度/市场气泡混淆（用户反馈 C13-1）。
+   注意：此全局样式对 styleIsolation:isolated 的组件不生效，组件内需各定义一份 */
+.metal-tab {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  padding: 10px 18px;
+  position: relative;
+  line-height: 1.2;
+  background: transparent;
+  border: none;
+}
+.metal-tab.active { color: var(--gold-deep); }
+.metal-tab.active::after {
+  content: "";
+  position: absolute;
+  left: 12px; right: 12px; bottom: -2px;
+  height: 3px;
+  background: linear-gradient(90deg, var(--gold), var(--copper));
+  border-radius: 3px;
+}
+.chip.market-london.active,
+.chip.market-domestic.active,
+.chip.market-hongkong.active {
+  background: linear-gradient(135deg, var(--gold), var(--copper));
+  color: #fff;
+  border-color: transparent;
+}
+
+/* 区块标题与选项行间距全局统一：标题上16下8，选项行上16 */
+.section-label {
+  font-size: 12px;
+  /* 加粗（用户反馈 C09「参考手机端」）：手机网页用 h2（浏览器默认 bold），
+     小程序 view 无默认字重，需显式 600，三端事件区标题视觉权重一致 */
+  font-weight: 600;
+  color: var(--ink-soft);
+  padding: 16px 16px 8px;
+  line-height: 1.4;
+}
+
+/* 统计卡 2×2 网格（C39 修复：旧写法 flex:1 1 44% 缺 min-width:0，
+   卡片内长数字（如 112,200.00 / 53,480.00）撑破基准导致后两张独占整行、
+   出现「长条状+右半边大块空白」。现用 calc(50% - 间隙) + min-width:0 锁死两列，
+   内容可收缩、等高对齐，铜切过去同样适用。
+   【C42 UI 重构】四卡统一为 flex 纵向布局 + min-height 等高 + 数值区垂直居中：
+   旧版历史区间竖排两行顶到卡片顶部，与单值卡节奏不一致、显得奇怪；
+   现四卡等高居中，历史区间的高/低收成一块、与单值卡同一格，视觉整齐。 */
+.stat-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 12px 0;
+}
+.stat-item {
+  flex: 1 1 calc(50% - 4px);
+  min-width: 0;
+  background: var(--card);
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06);
+  overflow: hidden;            /* 兜底：任何超宽内容裁在卡片内，不溢出板块 */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 84px;
+}
+.stat-item .k { font-size: 12px; color: var(--ink-soft); }
+.stat-item .v { font-size: 22px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; line-height: 1.1; overflow-wrap: anywhere; }
+.stat-item .s { font-size: 11px; color: var(--ink-soft); margin-top: 4px; }
+/* 历史区间：铜为「元/吨」六位数（如 112,200.00 / 53,480.00），
+   半宽卡片内并排必溢出，故高/低竖排；收紧成一块、与单值卡同格等高，不再突兀 */
+.stat-item .v.his-range { font-size: 18px; line-height: 1.25; display: flex; flex-direction: column; gap: 2px; margin-top: 5px; }
+.stat-item .v.his-range .hr-row { display: flex; align-items: baseline; gap: 6px; }
+.stat-item .v.his-range .hr-key { font-size: 12px; font-weight: 600; flex: 0 0 auto; }
+.stat-item .v.his-range .hr-val { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.v-up { color: var(--up); }
+.v-down { color: var(--down); }
+.v-flat { color: var(--ink); }
+
+.muted { color: var(--ink-soft); }
+.tip { font-size: 11px; color: var(--ink-soft); line-height: 1.6; padding: 0 16px 4px; }
+.disclaimer {
+  font-size: 11px;
+  color: var(--ink-soft);
+  line-height: 1.7;
+  padding: 14px 16px 28px;
+}
