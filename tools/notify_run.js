@@ -30,6 +30,9 @@ const GH_PAGES_CANON = "https://zsyong2026.github.io/metal-price-monitor/data";
 //   真正细粒度的异常由 check_platform.js 的「平台同步失败 / 平台落后真源」覆盖。
 const PRICE_STALE_MIN = 120;  // 价格真源：Actions 实测 52~81 分钟一轮，留足排队余量
 const EVENT_STALE_MIN = 240;  // 事件：事件源本身按更慢节奏更新
+// 【C44】真源读取的重试确认：单次网络抖动不应直接判「数据异常」。
+const CANON_RETRY = 2;
+const CANON_RETRY_GAP_MS = 2500;
 const REPEAT_ALERT_MS = 3 * 60 * 60 * 1000; // 持续异常：3 小时一条汇总
 const STATE_FILE = path.join(DATA, ".alert-state.json");
 const TIMEOUT_MS = 15000;
@@ -75,9 +78,20 @@ function writeState(s) {
 (async () => {
   const mode = process.argv[2] || "check";
   // 【C42】优先读 GH Pages 真源；本地 data/ 仅作不可达时的兜底（消除冻结副本误报）
-  let meta = await getJSON(GH_PAGES_CANON + "/meta.json?_ts=" + Date.now());
+  // 【C44·重试确认】真源读取偶发网络抖动会让单次读取失败，而真源是"最不该误报"的对象
+  //   （它一挂全端受影响，误报代价高）。单次失败先重试（最多 CANON_RETRY 次），
+  //   仍失败才走本地兜底 / 判异常。
+  async function fetchCanon(file) {
+    for (let i = 0; i <= CANON_RETRY; i++) {
+      const j = await getJSON(GH_PAGES_CANON + "/" + file + "?_ts=" + Date.now());
+      if (j) return j;
+      if (i < CANON_RETRY) await new Promise((r) => setTimeout(r, CANON_RETRY_GAP_MS));
+    }
+    return null;
+  }
+  let meta = await fetchCanon("meta.json");
   if (!meta) { meta = readJSON("meta.json"); if (meta) console.warn("[notify] GH Pages 不可达，回退本地 data/ 副本判新鲜度"); }
-  let evMeta = await getJSON(GH_PAGES_CANON + "/events.meta.json?_ts=" + Date.now());
+  let evMeta = await fetchCanon("events.meta.json");
   if (!evMeta) { evMeta = readJSON("events.meta.json"); if (evMeta) console.warn("[notify] GH Pages 不可达，回退本地 events 副本"); }
   const problems = [];
 
