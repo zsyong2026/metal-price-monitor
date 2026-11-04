@@ -54,6 +54,16 @@ const MIME = {
 // 内存缓存：{ file -> { body, at, updatedAt } }，生成完成后整体刷新
 const cache = {};
 let lastGenAt = 0;
+// 【C44】读取上次成功同步时间（跨重启）：本进程尚未成功同步过时回退用。
+function readLastSuccessAt() {
+  try {
+    const p = path.join(DATA, ".last-sync.json");
+    if (!fs.existsSync(p)) return "";
+    const j = safeParse(fs.readFileSync(p, "utf-8"));
+    return (j && j.lastSuccessAt) || "";
+  } catch (e) { return ""; }
+}
+
 // 【C43】进程启动时刻（固定不变）：供巡检区分「平台刚启动还没同步完」
 //   与「平台跑了一阵仍然同步失败」——两者在 health 上的指纹完全一样，
 //   只能靠「启动多久了」区分。冷启动宽限 20 分钟内不算故障，超时才算。
@@ -346,6 +356,14 @@ async function syncFromPages() {
     }
   }
   lastGenAt = Date.now();
+  // 【C44】持久化「最近一次成功同步时间」到磁盘：进程重启后仍能知道历史。
+  //   用途：区分「真冷启动（刚起来，第一次同步还没跑完）」与
+  //   「一直同步不上（重启了 N 次，每次都没成功过）」——
+  //   后者是真实故障，不能被冷启动宽限无限掩盖。
+  try {
+    fs.writeFileSync(path.join(DATA, ".last-sync.json"),
+      JSON.stringify({ lastSuccessAt: new Date(lastGenAt).toISOString() }));
+  } catch (e) { /* ignore：写不进去不影响主流程 */ }
   console.log("[sync] 已从真源镜像池同步核心 " + coreOk + "/" + CORE_FILES.length +
     "，可选沿用缓存 " + kept + "/" + OPTIONAL_FILES.length +
     "，来源 " + usable.map((p) => p.name).join(",") +
@@ -420,6 +438,12 @@ const server = http.createServer(async (req, res) => {
         ok: true, role: "readonly-proxy", generatedAt: lastGenAt ? new Date(lastGenAt).toISOString() : null,
         // 【C43】进程启动时刻：巡检用它区分「冷启动未同步完」与「真故障」
         processStartAt: new Date(PROCESS_START_AT).toISOString(),
+        // 【C44】最近一次成功同步（跨重启持久化）：本进程没成功同步过时会回退读磁盘记录。
+        //   巡检据此区分「真冷启动」与「反复重启但每次都没同步成功（真故障）」，
+        //   避免冷启动宽限被无限滥用、掩盖真实故障。
+        lastSuccessAt: lastGenAt
+          ? new Date(lastGenAt).toISOString()
+          : readLastSuccessAt(),
         // 【C43】字段语义澄清：lastGenOk 现在表示「最近一轮真源同步是否成功」，
         //   lastError 为最近一次失败原因（空串 = 当前无异常）。
         //   C37 之前这两个字段表示「平台本地生成器」状态，平台已纯只读，故语义已变但字段名保留
