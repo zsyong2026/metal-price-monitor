@@ -37,6 +37,10 @@ const MAX_AGE_MIN = 90;         // 真源新鲜度：Actions 实测约每小时�
 // 平台漂移：平台每 15 分钟同步一次真源，正常漂移 < 15 分钟。
 //   60 分钟 = 落后 4 个同步周期，足以判定链路异常；再放宽就会漏报真正的卡死。
 const DRIFT_WARN_MIN = 60;
+// 平台冷启动宽限期：平台进程启动后这段时间内，若还没成功同步过一次真源，
+//   视为「刚起来还没同步完」而非故障（避免部署后误报 + 无效处置建议）。
+//   超时仍未同步成功 → 判真故障。
+const COLD_START_GRACE_MIN = 20;
 // 平台自报同步失败（lastGenOk=false）时，**无论漂移多少分钟都立即报**——
 //   这是最强的信号：平台自己都说没同步上，哪怕数据暂时还新鲜也该报（否则真源一旦
 //   同时停更，会因为"漂移还没超阈值"而静默，直到双故障叠加才暴露）。
@@ -45,20 +49,29 @@ const TIMEOUT_MS = 15000;
 
 function getJSON(url) {
   return new Promise((resolve) => {
-    const t = setTimeout(() => { try { req.destroy(); } catch (e) { /* ignore */ } resolve(null); }, TIMEOUT_MS);
-    const req = require("https").get(url, { headers: { "User-Agent": "metals-check/1.0" } }, (res) => {
-      let body = "";
-      res.setEncoding("utf-8");
-      res.on("data", (c) => (body += c));
-      res.on("end", () => {
-        clearTimeout(t);
-        // 网关可能返回 403/404 的 JSON 错误体：能解析但字段全缺（generatedAt=null 等），
-        //   若当成功解析就会误报「数据不新鲜」。故非 2xx 一律按不可达处理。
-        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) { resolve(null); return; }
-        try { resolve(JSON.parse(body)); } catch (e) { resolve(null); }
+    // 【C43】与平台侧同源的隐患加固：req 必须先声明再引用（避免 TDZ），
+    //   且超时路径要 clearTimeout，避免定时器泄漏拖慢 Actions 轮次。
+    let req = null;
+    let settled = false;
+    const done = (v) => { if (settled) return; settled = true; clearTimeout(t); resolve(v); };
+    const t = setTimeout(() => { try { if (req) req.destroy(); } catch (e) { /* ignore */ } done(null); }, TIMEOUT_MS);
+    try {
+      req = require("https").get(url, { headers: { "User-Agent": "metals-check/1.0" } }, (res) => {
+        let body = "";
+        res.setEncoding("utf-8");
+        res.on("data", (c) => (body += c));
+        res.on("end", () => {
+          // 网关可能返回 403/404 的 JSON 错误体：能解析但字段全缺（generatedAt=null 等），
+          //   若当成功解析就会误报「数据不新鲜」。故非 2xx 一律按不可达处理。
+          if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) { done(null); return; }
+          try { done(JSON.parse(body)); } catch (e) { done(null); }
+        });
+        res.on("error", () => done(null));
       });
-    });
-    req.on("error", () => { clearTimeout(t); resolve(null); });
+      req.on("error", () => done(null));
+    } catch (e) {
+      done(null);
+    }
   });
 }
 
@@ -108,10 +121,34 @@ function ageMin(iso) {
       //   无论漂移多少分钟都要报：否则「平台已挂 + 真源恰好更新」时会因漂移未超阈值而静默，
       //   等双故障叠加才暴露 —— 那正是「牵一发而动全身」被延误的典型形态。
       const src = health.source || {};
-      if (health.lastGenOk === false) {
+      // ── 冷启动宽限 ──
+      // 【C43·修正误判】平台容器刚重启时，boot() 的首轮真源同步尚未完成，
+      //   此时 /api/health 的状态量仍停在初始值（lastGenOk=false、lastError 空、
+      //   镜像列表空）—— 与「真源镜像池全部不可达」的指纹**完全一样**。
+      //   实测：部署后十几秒内巡检会误报「三路镜像全部不可达 → 重发平台版」，
+      //   而平台其实 2 秒后就同步成功了 → 假警报 + 无效处置建议。
+      //   判据：generatedAt 为空 = 平台**从未成功同步过**（刚起来）→ 给宽限期；
+      //   真故障平台跑过一阵后 generatedAt 一定有值（哪怕那次成功是很久以前），
+      //   此时再报才是真告警。
+      //   注意不能用「updatedAt 是否有值」判断：部署包自带的磁盘快照也有时间戳，
+      //   冷启动期间 updatedAt 非空，但同步确实还没成功过一次。
+      //   【宽限不能无限】若平台**永远**同步不上，generatedAt 会一直为空 →
+      //   会被永久宽限、永远不告警。故用「平台进程启动时刻」兜底：
+      //   平台启动超过 COLD_START_GRACE_MIN 分钟仍未成功同步过一次 → 报真故障。
+      //   启动时刻取 /api/health 的 processStartAt（server.js 新增，进程启动即固定）。
+      const coldStart = !health.generatedAt;
+      const upMin = health.processStartAt ? ageMin(health.processStartAt) : NaN;
+      const coldStartExpired = coldStart && !isNaN(upMin) && upMin > COLD_START_GRACE_MIN;
+      if (coldStart && !coldStartExpired) {
+        info.push("平台刚启动（尚未完成首轮真源同步，状态量仍为初值），本次不判定为故障");
+      } else if (health.lastGenOk === false) {
         const mirrors = (src.mirrors || []).join(",");
+        const head = coldStartExpired
+          ? "【平台同步失败·冷启动超时】平台启动已 " + Math.round(upMin) + " 分钟仍未成功同步过一次真源"
+            + "（超过 " + COLD_START_GRACE_MIN + " 分钟宽限期）"
+          : "【平台同步失败】平台自报最近一轮真源同步失败（lastGenOk=false）";
         problems.push(
-          "【平台同步失败】平台自报最近一轮真源同步失败（lastGenOk=false）。" +
+          head + "。" +
           "lastError=" + JSON.stringify(health.lastError || "(空)") +
           "；可用镜像=" + (mirrors || "无（三路真源镜像全部不可达）") +
           "。平台当前只能服务上一轮缓存/部署快照，PC 网页与小程序云函数可能读到陈旧价格。" +
@@ -129,8 +166,11 @@ function ageMin(iso) {
       if (platTs) {
         const drift = ageMin(platTs) - ageMin(canon.generatedAt); // 正 = 平台落后于真源
         console.log("[platform] served lastUpdate=" + platTs + " 落后真源约 " + Math.round(drift) + " 分钟");
-        // 平台同步已失败时，漂移告警并入上面那条（避免同一病因报两次、噪音翻倍）
-        if (health.lastGenOk !== false) {
+        // 平台同步已失败 / 冷启动中时，漂移告警并入上面那条或直接跳过
+        // （避免同一病因报两次、噪音翻倍；也避免冷启动期误报"落后真源"）
+        if (coldStart && !coldStartExpired) {
+          info.push("平台冷启动中，本轮不判定漂移");
+        } else if (health.lastGenOk !== false) {
           if (drift > DRIFT_WARN_MIN) {
             problems.push("【平台落后真源】平台吐出数据（" + platTs + "）落后 GH Pages 真源（" + canon.generatedAt +
               "）约 " + Math.round(drift) + " 分钟，超出 " + DRIFT_WARN_MIN + " 分钟阈值。" +
