@@ -152,9 +152,11 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 .stat-card .v.his-range .hr-val { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .stat-card .v.his-range .hr-val.up { color: var(--up); }
 .stat-card .v.his-range .hr-val.down { color: var(--down); }
-.stat-card .sub { font-size: 11px; margin-top: 4px; font-weight: 500; }
-.v.up, .sub.up { color: var(--up); }
-.v.down, .sub.down { color: var(--down); }
+/* 【指标看板统一·改】副行恒为灰色弱提示（对齐小程序 .s 11px/ink-soft），
+   不再继承涨跌色；涨跌色只落在主数值 .v，避免「一卡两红」显花 */
+.stat-card .sub { font-size: 11px; margin-top: 4px; font-weight: 500; color: var(--ink-soft); }
+.v.up { color: var(--up); }
+.v.down { color: var(--down); }
 
 /* Chart */
 .chart-wrap {
