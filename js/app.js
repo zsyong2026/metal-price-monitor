@@ -175,8 +175,71 @@
     });
   }
 
+  // 【性能·三端提速】bundle 一级加速源：1 次请求拿齐 6 文件（gold/silver/copper/meta/events/eventsMeta）。
+  // 端上优先试 bundle，命中即免去中心 6 次分散请求（网页端每条还 waterfall 试错 4 个地址）。
+  // 失败（bundle 缺失/损坏/不可达）直接抛错，由 init() 回退到原有分散请求逻辑，绝不劣化。
+  function tryBundle() {
+    var urls = [canon(CANON + "data/bundle.json"), jsd(JSD + "data/bundle.json"), "data/bundle.json"];
+    if (!STATIC) urls.push("/api/bundle" + shareQ()); // 平台若有 /api/bundle 则同源优先
+    return loadFirst(urls).then(function (b) {
+      if (b && b.meta && b.meta.generatedAt && b.metals && b.metals.gold && b.metals.silver && b.metals.copper) return b;
+      throw new Error("bundle 不可用");
+    });
+  }
+
+  // 把已就绪的金属数据落到 state 并渲染（switchMetal / bundle 命中后复用，避免重复请求）
+  function applyMetalData(d) {
+    state.data = d;
+    corrCache = {}; // 数据源更换，相关性缓存作废
+    renderUpdateTimes();
+    state.eventPage = 1;
+    syncGranAvailability(); // 铜无小时线时禁用「时」选项
+    renderChart();
+    computeAndRenderStats();
+    renderEvents();
+    refreshLiveSpot();
+  }
+
+  // 顶部徽标 + 底部免责/更新策略文案（bundle 命中与原分散请求两条路径共用）
+  function setupMetaUI() {
+    document.getElementById("disclaimer").innerHTML = state.meta.disclaimer +
+      " <br><span style='color:var(--ink-soft)'>更新策略：" +
+      state.meta.updatePolicy.hourly + " ｜ " + state.meta.updatePolicy.daily + " ｜ " + state.meta.updatePolicy.history + "</span>";
+    var b = document.getElementById("dataModeBadge");
+    if (state.meta.dataMode === "real") {
+      b.textContent = "真实数据"; b.className = "badge badge-ok";
+    } else if (state.meta.dataMode === "spot") {
+      b.textContent = "真实现货"; b.className = "badge badge-ok";
+      b.title = "最新价为真实现货（每15分钟例行抓取），历史曲线为锚定建模趋势";
+    } else {
+      // 非 real/spot（静态托管或建模兜底）：与小程序第三态口径统一，不显示「建模数据」这种
+      // 自我否定的措辞（C08 反馈），改称「缓存数据」并保留说明 tooltip
+      b.textContent = "缓存数据";
+      b.title = "展示最近一次成功生成的数据快照（实时行情获取失败时自动进入该模式）";
+    }
+  }
+
   function init() {
     parseHash();
+    // 【性能·三端提速】优先 1 次请求拿 bundle；命中即填充并渲染，省去中心 6 次分散请求（含 waterfall 试错）
+    tryBundle().then(function (b) {
+      state.meta = b.meta;
+      state.events = b.events;
+      state.eventsMeta = b.eventsMeta || null;
+      cache.gold = b.metals.gold; cache.silver = b.metals.silver; cache.copper = b.metals.copper;
+      setupMetaUI();
+      initChart();
+      bindEvents();
+      syncUIFromState();
+      switchMetal(state.metal, true);
+      startAutoRefresh(); // 主动更新：定时检查数据新版本，用户无感知刷新各区域
+    }).catch(function () {
+      originalInit(); // bundle 不可用 → 回退原分散请求逻辑（逻辑不变）
+    });
+  }
+
+  // 原分散请求初始化（bundle 不可用时的回退路径，逻辑不变）
+  function originalInit() {
     Promise.all([
       // 【C32·三端统一】全部改为 GH Pages 镜像优先（与手机网页/小程序同源同字节），平台 /api 兜底
       loadFirst([canon(CANON + "data/meta.json"), "/api/meta" + shareQ(), jsd(JSD + "data/meta.json"), "data/meta.json"]),
@@ -188,23 +251,7 @@
         state.meta = res[0];
         state.events = res[1];
         state.eventsMeta = res[2];
-        document.getElementById("disclaimer").innerHTML = state.meta.disclaimer +
-          " <br><span style='color:var(--ink-soft)'>更新策略：" +
-          state.meta.updatePolicy.hourly + " ｜ " + state.meta.updatePolicy.daily + " ｜ " + state.meta.updatePolicy.history + "</span>";
-        if (state.meta.dataMode === "real") {
-          var b = document.getElementById("dataModeBadge");
-          b.textContent = "真实数据"; b.className = "badge badge-ok";
-        } else if (state.meta.dataMode === "spot") {
-          var b2 = document.getElementById("dataModeBadge");
-          b2.textContent = "真实现货"; b2.className = "badge badge-ok";
-          b2.title = "最新价为真实现货（每15分钟例行抓取），历史曲线为锚定建模趋势";
-        } else {
-          // 非 real/spot（静态托管或建模兜底）：与小程序第三态口径统一，不显示「建模数据」这种
-          // 自我否定的措辞（C08 反馈），改称「缓存数据」并保留说明 tooltip
-          var b3 = document.getElementById("dataModeBadge");
-          b3.textContent = "缓存数据";
-          b3.title = "展示最近一次成功生成的数据快照（实时行情获取失败时自动进入该模式）";
-        }
+        setupMetaUI();
         initChart();
         bindEvents();
         syncUIFromState();
@@ -927,17 +974,9 @@
     state.metal = metal;
     state.priceSpotAt = null; // 现货时间按品种重置，避免串显示
     syncUnitToggle(); // 铜不开放「元/克」，且需重置视图
-    ensureMetal(metal).then(function (d) {
-      state.data = d;
-      corrCache = {}; // 数据源更换，相关性缓存作废
-      renderUpdateTimes();
-      state.eventPage = 1;
-      syncGranAvailability(); // 铜无小时线时禁用「时」选项
-      renderChart();
-      computeAndRenderStats();
-      renderEvents();
-      refreshLiveSpot();
-    });
+    // bundle 命中后 cache 已就绪 → 直接用；否则按原逻辑拉取该金属
+    if (cache[metal]) { applyMetalData(cache[metal]); }
+    else { ensureMetal(metal).then(applyMetalData); }
   }
 
   // 单位切换控件：铜隐藏；金/银显示，并按 state.gram 高亮
