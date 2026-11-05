@@ -20,7 +20,7 @@
     eventCat: "all",
     eventPage: 1,
   };
-  var PAGE_SIZE = 20; // 三端统一：每页 20 条（原 8 条导致页码按钮过多、窄屏折行）
+  var PAGE_SIZE = 10; // 三端统一：每页 10 条（移动端一屏约 1.5 屏、下滑成本低；原 8 条页码过多、20 条单页过长折中）
   var chart = null;
   var cache = {};
 
