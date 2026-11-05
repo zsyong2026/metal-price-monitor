@@ -52,7 +52,9 @@ html, body { margin: 0; padding: 0; }
 body {
   background: var(--bg);
   color: var(--ink);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+  /* 【免费字体·三端统一】思源黑体 Noto Sans SC 置首（网页端经 Google 中国镜像加载；
+     小程序端声明一致，未加载时回退系统字体，视觉一致且不影响加载速度） */
+  font-family: "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   line-height: 1.45;
 }
