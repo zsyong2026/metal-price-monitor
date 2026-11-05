@@ -441,7 +441,7 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
   .control-group .chip { padding: 2px 8px; font-size: 11px; }
   .stats { grid-template-columns: repeat(2, 1fr); gap: 10px; }
   .stat-card { min-height: 80px; padding: 10px 12px; }
-  .stat-card .v { font-size: 20px; }
+  .stat-card .v { font-size: 22px; } /* 【三端字体统一·改】窄屏看板也对齐小程序 22px，消除手机网页 vs 小程序 2px 差异 */
   #chart { height: 360px; }
   .events-head h2 { font-size: 15px; }
   .event-item .ei-title { font-size: 14px; }
