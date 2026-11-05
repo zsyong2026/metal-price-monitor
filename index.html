@@ -10,6 +10,8 @@
        下方 preconnect 仅用于数据请求（GH Pages / jsDelivr），与字体无关。 -->
   <link rel="preconnect" href="https://zsyong2026.github.io" crossorigin />
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <!-- 最新价每 1 分钟直连实时现货，提前建连减少首次刷新延迟 -->
+  <link rel="preconnect" href="https://api.gold-api.com" crossorigin />
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
@@ -101,8 +103,8 @@
     <details class="foot-sec">
       <summary>数据来源与发布链路</summary>
       <div class="foot-body">
-        <p id="disclaimer">数据说明：全部为<strong>真实数据</strong>——伦敦价为新浪国际期货日K（COMEX 黄金/白银连续、COMEX 铜连续），最新价为 gold-api.com 实时现货；国内价为东方财富真实日K（上海金交所 AU9999 元/克、白银T+D 元/千克、沪铜主连 元/吨）；香港价按每日真实汇率（Frankfurter）折算；小时线仅采用真实 60 分钟K。</p>
-        <p>发布链路：定时收集（每 15 分钟）→ 校验（条数/时间递增/数值范围/单日跳变/无大段缺失/末端新鲜度/与真实现货交叉核对）→ 清洗 → 入库 → 发布，任一校验不通过则保留上一版数据。非交易时段以虚线表示价格延续。</p>
+        <p id="disclaimer">数据说明：伦敦 / 香港为 <strong>gold-api.com 实时现货</strong>（每 1 分钟刷新；铜由美元/磅折算为美元/吨，香港按真实汇率折算）；国内为按最近一次真实内外盘比价随国际现货联动的<strong>联动价</strong>，非独立实时成交价。历史曲线为新浪国际期货 / 东方财富真实日K，重大事件由公开财经资讯归纳。</p>
+        <p>发布链路：真源每 15 分钟定时收集 → 校验（条数/时间递增/数值范围/单日跳变/无大段缺失/末端新鲜度/与真实现货交叉核对）→ 清洗 → 入库 → 发布；最新价另由页面每 1 分钟直连实时现货刷新，不参与上述批次。任一校验不通过则保留上一版数据。非交易时段以虚线表示价格延续。</p>
       </div>
     </details>
 
@@ -133,7 +135,7 @@
     <details class="foot-sec">
       <summary>更新与免责</summary>
       <div class="foot-body">
-        <p id="updatePolicyFoot">更新策略：每 15 分钟定时抓取并校验发布 ｜ 日线为真实收盘价 ｜ 历史覆盖近 5 年</p>
+        <p id="updatePolicyFoot">更新策略：最新价每 1 分钟直连实时现货 ｜ 历史曲线与校验每 15 分钟发布 ｜ 重大事件约每 1 小时 ｜ 日线为真实收盘价 ｜ 历史覆盖近 5 年</p>
         <p>© 金属价格收集 · 仅供研究参考，不构成投资建议。本程序仅提供价格信息展示，不涉及任何交易、回收或投资咨询服务。</p>
       </div>
     </details>
