@@ -108,6 +108,10 @@
   }
   var CANON = "https://zsyong2026.github.io/metal-price-monitor/"; // 兜底：GitHub Pages 真源壳
   function canon(u) { return u + (u.indexOf("?") >= 0 ? "&" : "?") + "_ts=" + Date.now(); }
+  // 【C48·韧性拉齐】jsDelivr 兜底：CORS:*，跨域直连。PC 网页经平台跨域访问时 GitHub Pages 会被 CORS 拦截，
+  //   平台不可达时 jsDelivr 仍能给 PC/手机网页供数，与小程序的韧性对齐（小程序直连 GH Pages 主源）。
+  var JSD = "https://cdn.jsdelivr.net/gh/zsyong2026/metal-price-monitor@main/";
+  function jsd(u) { return u + (u.indexOf("?") >= 0 ? "&" : "?") + "_ts=" + Date.now(); }
   function fxOf(d) {
     return (d && d.fx && d.fx.usdcny) ? d.fx : { usdcny: 7.1, hkdcny: 0.91 };
   }
@@ -165,7 +169,7 @@
     // 【C32·三端统一】改为 GH Pages 镜像优先（与手机网页/小程序同源同字节）→ 平台 /api 兜底 → 本地静态。
     // 三端读同一份镜像，更新时间恒一致；镜像偶发滞后也是三端同步滞后，不再互相错位。
     // 静态版：__STATIC__ 时 loadFirst 会自动剔除 /api/，只剩 canon + 本地静态
-    return loadFirst([canon(CANON + "data/" + metal + ".json"), "/api/data/" + metal + shareQ(), "data/" + metal + ".json"]).then(function (d) {
+    return loadFirst([canon(CANON + "data/" + metal + ".json"), "/api/data/" + metal + shareQ(), jsd(JSD + "data/" + metal + ".json"), "data/" + metal + ".json"]).then(function (d) {
       cache[metal] = d;
       return d;
     });
@@ -175,10 +179,10 @@
     parseHash();
     Promise.all([
       // 【C32·三端统一】全部改为 GH Pages 镜像优先（与手机网页/小程序同源同字节），平台 /api 兜底
-      loadFirst([canon(CANON + "data/meta.json"), "/api/meta" + shareQ(), "data/meta.json"]),
-      loadFirst([canon(CANON + "data/events.json"), "/api/events" + shareQ(), "data/events.json"]),
+      loadFirst([canon(CANON + "data/meta.json"), "/api/meta" + shareQ(), jsd(JSD + "data/meta.json"), "data/meta.json"]),
+      loadFirst([canon(CANON + "data/events.json"), "/api/events" + shareQ(), jsd(JSD + "data/events.json"), "data/events.json"]),
       // 事件独立元信息：老版本接口/文件缺失时容忍 null（更新时间回退为价格时间）
-      loadFirst([canon(CANON + "data/events.meta.json"), "/api/events-meta" + shareQ(), "data/events.meta.json"]).catch(function () { return null; }),
+      loadFirst([canon(CANON + "data/events.meta.json"), "/api/events-meta" + shareQ(), jsd(JSD + "data/events.meta.json"), "data/events.meta.json"]).catch(function () { return null; }),
     ])
       .then(function (res) {
         state.meta = res[0];
@@ -891,8 +895,8 @@
     try {
       var res = await Promise.all([
         // 【C32·三端统一】GH Pages 镜像优先，平台 /api 兜底（与手机网页/小程序同源同字节）
-        loadFirst([canon(CANON + "data/meta.json"), "/api/meta" + shareQ(), "data/meta.json"]),
-        loadFirst([canon(CANON + "data/events.meta.json"), "/api/events-meta" + shareQ(), "data/events.meta.json"]).catch(function () { return null; }),
+        loadFirst([canon(CANON + "data/meta.json"), "/api/meta" + shareQ(), jsd(JSD + "data/meta.json"), "data/meta.json"]),
+        loadFirst([canon(CANON + "data/events.meta.json"), "/api/events-meta" + shareQ(), jsd(JSD + "data/events.meta.json"), "data/events.meta.json"]).catch(function () { return null; }),
       ]);
       var meta = res[0], evMeta = res[1];
       var priceChanged = !!(meta && meta.generatedAt && (!state.meta || meta.generatedAt !== state.meta.generatedAt));
@@ -909,7 +913,7 @@
       }
       if (eventsChanged) {
         state.eventsMeta = evMeta;
-        state.events = await loadFirst([canon(CANON + "data/events.json"), "/api/events" + shareQ(), "data/events.json"]);
+        state.events = await loadFirst([canon(CANON + "data/events.json"), "/api/events" + shareQ(), jsd(JSD + "data/events.json"), "data/events.json"]);
         state.eventPage = 1;
         renderEvents();
       }
