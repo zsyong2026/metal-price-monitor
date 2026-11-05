@@ -120,7 +120,12 @@ function friendlyAge(min) {
     const now = Date.now();
     const st = readState();
     if (!problems.length) {
-      writeState({ lastAlertAt: st.lastAlertAt, lastOkAt: now, streak: 0 });
+      // 【2026-11-05】健康时不必每轮写盘：lastOkAt 仅供恢复判定，
+      //   每 15 分钟写一次会让「状态回写」步骤每轮制造一次无意义提交。
+      //   仅在「刚从异常恢复」或「距上次记录超过 1 小时」时落盘。
+      if (st.streak > 0 || now - (st.lastOkAt || 0) > 60 * 60 * 1000) {
+        writeState({ lastAlertAt: st.lastAlertAt, lastOkAt: now, streak: 0 });
+      }
       console.log("[notify] 数据健康：价格/事件均在预期周期内更新，校验通过，无需告警");
       process.exit(0);
     }
