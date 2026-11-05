@@ -1,24 +1,54 @@
-name: 数据健康巡检与告警
+name: 贵金属真源数据生成与监控
+# 数据真源生成器：GitHub Actions Runner 网络不受限（东方财富/新浪实时均可达），
+# 生成真实价格数据并直推 GH Pages；平台沙箱网络受限，已退化为只读该真源。
+# 【节奏说明】cron 写的是 */15，但低活跃仓库的 schedule 会被 GitHub 排队合并 ——
+#   实测真实触发间隔为 61~78 分钟（约每小时一轮），故巡检阈值按小时级校准（见 tools/*.js）。
 on:
   schedule:
     - cron: '*/15 * * * *'
   workflow_dispatch:
+
 permissions:
-  contents: read
+  contents: write   # push_data.js 用自动提供的 GITHUB_TOKEN 推送 data/ 到 main
+
 jobs:
-  check:
+  build:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # 企业微信群机器人 webhook（用户提供）。如需更高安全性，可改为 secrets.WECOM_WEBHOOK
+      # （GitHub 仓库 Settings → Secrets → Actions → New repository secret）。
+      WECOM_WEBHOOK: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=73f7805a-246d-47c1-824c-411ac4110b62"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: 巡检平台真源生成器（生成成功 / 数据新鲜 / 镜像推送）
-        run: node tools/check_platform.js
-      # 数据健康巡检：价格/事件停更、校验未过、事件源全停 → 微信告警（配置了 webhook 才发）
-      - name: 数据健康巡检与异常告警
+
+      - name: 生成真实数据（东财 AU9999/AGTD/沪铜 + 新浪国际/内盘，均真实可达）
+        run: node generate-all.js
+
+      - name: 推送真源数据到 GH Pages（data/ 唯一写入者，用 checkout 内置 GITHUB_TOKEN）
+        run: |
+          git config user.name "metal-bot"
+          git config user.email "actions@github.com"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "数据无变化，跳过提交"
+          else
+            git commit -m "data: 真实数据推送 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git push origin HEAD:main || echo "推送冲突，下一轮重试"
+          fi
+
+      - name: 巡检平台真源（生成成功 / 数据新鲜 / 镜像）—— 仅信息，不阻断
         if: always()
-        env:
-          WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
-          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+        continue-on-error: true
+        run: node tools/check_platform.js
+
+      - name: 数据健康巡检与异常告警（推送企业微信）
+        if: always()
         run: node tools/notify_run.js check
+
+      - name: 工作流失败兜底告警（推送企业微信）
+        if: failure()
+        run: node -e "require('./tools/notify').send('贵金属监测 · 工作流异常','GitHub Actions 数据生成/推送步骤失败，请查看运行日志：'+(process.env.GITHUB_SERVER_URL||'')+'/'+(process.env.GITHUB_REPOSITORY||'')+'/actions/runs/'+(process.env.GITHUB_RUN_ID||'')).then(r=>console.log(r))"
