@@ -102,6 +102,13 @@
     return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
       " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
   }
+  // 【准确数字秒】用户要求更新时间别只到分钟：手机状态栏是秒级的，页面精确到秒才能直接核对。
+  function fmtLocalSec(iso) {
+    var s = fmtLocal(iso);
+    if (s === "—" || s === iso) return s;
+    var d = new Date(iso);
+    return isNaN(d.getTime()) ? s : s + ":" + pad(d.getSeconds());
+  }
   // 微信/分享链接携带的 sharecode：网关用它对请求做鉴权；把它拼到所有 /api 请求上，
   // 这样即便浏览器/微信 WebView 没有持久化网关的 __wb_rsc Cookie，也能通过分享码拿到数据。
   function shareQ() {
@@ -258,13 +265,13 @@
     // 【1 分钟实时价·改】不再直接展示真源里的 updatePolicy 文案（那套仍写「每 15 分钟抓一次现货」，
     //   与最新价 1 分钟直连的新口径矛盾）。前端统一改写为三层频率 + 市场口径，三端同文案。
     document.getElementById("disclaimer").innerHTML =
-      "数据说明：伦敦 / 香港为 <strong>gold-api.com 实时现货</strong>（每 1 分钟刷新；" +
+      "数据说明：伦敦 / 香港为 <strong>gold-api.com 实时现货</strong>（每 60 秒刷新；" +
       "铜由美元/磅折算为美元/吨，香港按真实汇率折算）；国内为按最近一次真实内外盘比价" +
       "随国际现货联动的<strong>联动价</strong>，非独立实时成交价。历史曲线为新浪国际期货 / " +
       "东方财富真实日K，重大事件由公开财经资讯归纳，二者每 15 分钟由真源发布一次。" +
-      " <br><span style='color:var(--ink-soft)'>更新频率：最新价 1 分钟 ｜ 曲线与校验 15 分钟 ｜ 事件约 1 小时；任一校验不通过保留上一版数据。</span>";
+      " <br><span style='color:var(--ink-soft)'>更新频率：最新价 60 秒 ｜ 曲线与校验 15 分钟 ｜ 事件约 1 小时；任一校验不通过保留上一版数据。</span>";
     var b = document.getElementById("dataModeBadge");
-    var liveTitle = "最新价：直连实时现货，每 1 分钟刷新；国内为按真实内外盘比价联动的联动价；历史曲线 / 事件每 15 分钟由真源发布";
+    var liveTitle = "最新价：直连实时现货，每 60 秒刷新（页面时间精确到秒）；国内为按真实内外盘比价联动的联动价；历史曲线 / 事件每 15 分钟由真源发布";
     if (state.meta.dataMode === "real") {
       b.textContent = "真实数据"; b.className = "badge badge-ok"; b.title = liveTitle;
     } else if (state.meta.dataMode === "spot") {
@@ -1024,23 +1031,30 @@
   function eventsStamp() {
     return (state.eventsMeta && state.eventsMeta.updatedAt) || "";
   }
+  // 有没有拿到实时现货：决定频率文案能否标「60 秒」。
+  // 拿不到时如实写「真源 15 分钟」，绝不假标（用户截图里 18:15 卡住却写「1 分钟」就是这么来的）。
+  function spotAvailable() {
+    return !!(state.data && livePricesFor(state.metal, state.data));
+  }
   function renderUpdateTimes() {
     var p = priceStamp(), c = curveStamp(), e = eventsStamp();
+    var hasLive = spotAvailable();
+    var ps = fmtLocalSec(p), cs = fmtLocalSec(c), es = fmtLocalSec(e);
     var el = document.getElementById("lastUpdate");
     if (el) {
-      el.textContent = fmtLocal(p);
-      el.title = "最新价更新于 " + fmtLocal(p) + "（每 1 分钟）\n" +
-        "曲线更新于 " + fmtLocal(c) + "（每 15 分钟）\n" +
-        "事件更新于 " + fmtLocal(e) + "（约每 1 小时）";
+      el.textContent = ps;
+      el.title = "最新价更新于 " + ps + (hasLive ? "（每 60 秒）" : "（实时价暂不可用，当前为真源 15 分钟版）") + "\n" +
+        "曲线更新于 " + cs + "（每 15 分钟）\n" +
+        "事件更新于 " + es + "（约每 1 小时）";
     }
     var pe = document.getElementById("priceUpdate");
     if (pe) {
-      // 频率分层：最新价 1 分钟 / 曲线 15 分钟 / 事件 1 小时，
-      // 避免把顶部时间误读成「所有数据都每分钟更新」。
-      pe.textContent = "最新价 " + fmtLocal(p) + " · 1 分钟";
-      pe.title = "最新价：直连 gold-api.com 实时现货，每 1 分钟刷新（" + fmtLocal(p) + "）\n" +
-        "历史曲线与校验：每 15 分钟由真源发布（" + fmtLocal(c) + "）\n" +
-        "重大事件：约每 1 小时（" + fmtLocal(e) + "）\n" +
+      // 频率分层用准确数字秒：最新价 60 秒 / 曲线 15 分钟 / 事件 1 小时，
+      // 时间精确到秒，手机状态栏与页面可直接核对，不再出现「写着 1 分钟、时间却卡住」。
+      pe.textContent = "最新价 " + ps + (hasLive ? " · 每 60 秒" : " · 真源 15 分钟");
+      pe.title = "最新价：直连 gold-api.com 实时现货，每 60 秒刷新（" + ps + "）\n" +
+        "历史曲线与校验：每 15 分钟由真源发布（" + cs + "）\n" +
+        "重大事件：约每 1 小时（" + es + "）\n" +
         "国内市场：按最近一次真实内外盘比价随国际现货联动（联动价）";
     }
     var ee = document.getElementById("eventsUpdate");
