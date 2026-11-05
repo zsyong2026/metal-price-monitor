@@ -84,96 +84,15 @@ async function send(title, text) {
 }
 
 // 异常告警：带节流（同 key 60 分钟一次）。返回是否真正发出。
-//
-// 【C43·根治告警风暴】原实现只有**进程内**节流（_lastAlert 是模块变量），
-//   而 GitHub Actions 每轮都是全新进程 → 节流 100% 失效 → 同一个持续性异常
-//   会被每一轮重复播报（实测平台卡死期间每轮都推一条「平台落后真源」）。
-//   这正是「不能报一次问题，牵一发而动全身」的另一种形态：不是数据故障扩散，
-//   而是**告警本身在扩散**，用噪音把真问题淹掉。
-//   改为：跨进程持久化节流（状态落 data/.notify-throttle.json，随数据一起提交，
-//   故下一轮 Actions 能读到上一轮的记录）+ 保留进程内节流作为快速路径。
-//   另加「异常指纹」：同一指纹持续期间只在首次与每小时整点播报，状态变化立即播报。
-const fs = require("fs");
-const path = require("path");
-
-const THROTTLE_STATE_FILE = path.resolve(__dirname, "..", "data", ".notify-throttle.json");
-
-function readThrottleState() {
-  try { return JSON.parse(fs.readFileSync(THROTTLE_STATE_FILE, "utf-8")); }
-  catch (e) { return {}; }
-}
-function writeThrottleState(s) {
-  try {
-    fs.mkdirSync(path.dirname(THROTTLE_STATE_FILE), { recursive: true });
-    fs.writeFileSync(THROTTLE_STATE_FILE, JSON.stringify(s));
-  } catch (e) { /* 忽略：节流状态写不进去不应阻塞告警 */ }
-}
-
-// 异常指纹：同一类异常的稳定标识（不含时间戳等易变字段）
-function fingerprint(text) {
-  const s = String(text || "")
-    .replace(/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z?/g, "T")   // 时间戳归一
-    .replace(/[0-9]+\s*分钟/g, "N分钟")                        // 相对时长归一
-    .replace(/\d+/g, "#");
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
-  return h.toString(36);
-}
-
 async function alert(title, detail, key) {
   const k = key || title;
   const now = Date.now();
-  const state = readThrottleState();
-  const fp = fingerprint(title + "|" + detail);
-  const rec = state[k] || {};
-
-  // ── ① 发送失败优先重试（仅限「通道已配置但本次发送失败」的瞬时故障）──
-  //   上一轮尝试发送、通道是配置好的、但没发出去（网络抖动/机器人限流）→ 不节流，
-  //   下一轮立即重试。真实故障必须能报出来，不能被节流机制吞掉。
-  //   注意：若**压根没配置推送通道**（本地/自测环境），那是永久性不可发，
-  //   反复重试毫无意义 → 走下面的常规节流路径，避免日志被刷爆。
-  const channelConfigured = !!(process.env.WECOM_WEBHOOK || process.env.SERVERCHAN_SENDKEY);
-  if (channelConfigured && rec.lastFailedAt && (now - rec.lastFailedAt) < 10 * 60 * 1000) {
-    const r = await send("⚠️ " + title, detail + "\n\n> 时间：" + new Date().toISOString());
-    state[k] = { fingerprint: fp, lastSentAt: now, lastSeenAt: now, lastFailedAt: r.ok ? 0 : now, lastOk: !!r.ok };
-    writeThrottleState(state);
-    return r;
-  }
-
-  // ── ② 进程内快速节流 ──
   if (_lastAlert[k] && now - _lastAlert[k] < THROTTLE_MS) {
     console.log("[notify] 告警节流跳过（1 小时内已发过）：" + k);
     return { ok: true, throttled: true };
   }
-
-  // ── ③ 跨进程持久化节流 ──
-  // 同一异常指纹在窗口内只播报一次；异常内容变了（指纹不同）→ 立即播报，
-  // 保证「问题性质发生变化」时不会被节流掩盖。
-  const sameFingerprint = rec.fingerprint === fp;
-  const withinWindow = rec.lastSentAt && (now - rec.lastSentAt) < THROTTLE_MS;
-  if (sameFingerprint && withinWindow) {
-    console.log("[notify] 告警节流跳过（跨进程，1 小时内同一异常已发过）：" + k);
-    rec.lastSeenAt = now;
-    state[k] = rec;
-    writeThrottleState(state);
-    return { ok: true, throttled: true };
-  }
-
-  // ── ④ 实际发送 ──
   _lastAlert[k] = now;
-  const r = await send("⚠️ " + title, detail + "\n\n> 时间：" + new Date().toISOString());
-  // 记录「已尝试发送」的时间（而非仅成功时间）：否则推送通道未配置时 lastSentAt 恒为 0，
-  // 节流窗口恒不成立 → 告警风暴照旧（正是要根治的问题）。
-  // 发送失败则记 lastFailedAt，让下一轮可立即重试（见分支①）。
-  state[k] = {
-    fingerprint: fp,
-    lastSentAt: now,
-    lastSeenAt: now,
-    lastFailedAt: r.ok ? 0 : now,
-    lastOk: !!r.ok,
-  };
-  writeThrottleState(state);
-  return r;
+  return send("⚠️ " + title, detail + "\n\n> 时间：" + new Date().toISOString());
 }
 
 module.exports = { send, alert, sendWecom, sendServerChan };

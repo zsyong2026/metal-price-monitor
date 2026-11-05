@@ -10,58 +10,13 @@
 // 用法：node tools/notify_run.js check
 const fs = require("fs");
 const path = require("path");
-const https = require("https");
 const notify = require("./notify");
 
 const DATA = path.resolve(__dirname, "..", "data");
-// 【C42 根治「数据更新异常」误报】唯一可信真源 = GH Pages（由 GitHub Actions 每 15 分钟生成并推送）。
-//   本脚本以 GH Pages 为准判新鲜度；本地 data/ 仅作「GH Pages 不可达」时的兜底，
-//   彻底消除「读本地冻结副本（workspace / 某临时副本）误报『数据更新异常』」的伪告警
-//   （此前本地 data/ 卡在 11-03 09:46，干跑就报『价格数据已 891 分钟未更新』）。
-//   与 check_platform.js 同一口径，从源头统一判据。
-const GH_PAGES_CANON = "https://zsyong2026.github.io/metal-price-monitor/data";
-
-// 【阈值口径（按实测校准）】GitHub Actions 的 schedule 虽写 */15，但低活跃仓库会被排队合并，
-//   实测真实触发间隔为 52~81 分钟（2026-11-03/04 连续 22 轮 schedule 的 created_at 差值），
-//   并非 15 分钟。
-//   故价格陈旧阈值取 120 分钟（原 90 分钟仅比实测最大值多 9 分钟余量，
-//   Actions 稍有排队就会误报「数据更新异常」—— 用户此前被这类误报反复打扰）；
-//   事件陈旧阈值取 240 分钟（事件源本身按更慢节奏更新）。
-//   真正细粒度的异常由 check_platform.js 的「平台同步失败 / 平台落后真源」覆盖。
-const PRICE_STALE_MIN = 120;  // 价格真源：Actions 实测 52~81 分钟一轮，留足排队余量
-const EVENT_STALE_MIN = 240;  // 事件：事件源本身按更慢节奏更新
-// 【C44】真源读取的重试确认：单次网络抖动不应直接判「数据异常」。
-const CANON_RETRY = 2;
-const CANON_RETRY_GAP_MS = 2500;
+const PRICE_STALE_MIN = 45;   // 价格例行 15 分钟一轮
+const EVENT_STALE_MIN = 120;  // 事件例行 60 分钟一轮
 const REPEAT_ALERT_MS = 3 * 60 * 60 * 1000; // 持续异常：3 小时一条汇总
 const STATE_FILE = path.join(DATA, ".alert-state.json");
-const TIMEOUT_MS = 15000;
-
-// GH Pages 真源读取（与 check_platform.js 同口径：非 2xx 一律按不可达，避免把网关错误体当成功解析）
-// 【C43】与平台侧同源的隐患加固：req 先声明再引用（避免 TDZ）+ 统一 settle 出口 + 超时清定时器。
-function getJSON(url) {
-  return new Promise((resolve) => {
-    let req = null;
-    let settled = false;
-    const done = (v) => { if (settled) return; settled = true; clearTimeout(t); resolve(v); };
-    const t = setTimeout(() => { try { if (req) req.destroy(); } catch (e) { /* ignore */ } done(null); }, TIMEOUT_MS);
-    try {
-      req = https.get(url, { headers: { "User-Agent": "metals-notify/1.0" } }, (res) => {
-        let body = "";
-        res.setEncoding("utf-8");
-        res.on("data", (c) => (body += c));
-        res.on("end", () => {
-          if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) { done(null); return; }
-          try { done(JSON.parse(body)); } catch (e) { done(null); }
-        });
-        res.on("error", () => done(null));
-      });
-      req.on("error", () => done(null));
-    } catch (e) {
-      done(null);
-    }
-  });
-}
 
 function readJSON(f) {
   try { return JSON.parse(fs.readFileSync(path.join(DATA, f), "utf-8")); }
@@ -77,22 +32,8 @@ function writeState(s) {
 
 (async () => {
   const mode = process.argv[2] || "check";
-  // 【C42】优先读 GH Pages 真源；本地 data/ 仅作不可达时的兜底（消除冻结副本误报）
-  // 【C44·重试确认】真源读取偶发网络抖动会让单次读取失败，而真源是"最不该误报"的对象
-  //   （它一挂全端受影响，误报代价高）。单次失败先重试（最多 CANON_RETRY 次），
-  //   仍失败才走本地兜底 / 判异常。
-  async function fetchCanon(file) {
-    for (let i = 0; i <= CANON_RETRY; i++) {
-      const j = await getJSON(GH_PAGES_CANON + "/" + file + "?_ts=" + Date.now());
-      if (j) return j;
-      if (i < CANON_RETRY) await new Promise((r) => setTimeout(r, CANON_RETRY_GAP_MS));
-    }
-    return null;
-  }
-  let meta = await fetchCanon("meta.json");
-  if (!meta) { meta = readJSON("meta.json"); if (meta) console.warn("[notify] GH Pages 不可达，回退本地 data/ 副本判新鲜度"); }
-  let evMeta = await fetchCanon("events.meta.json");
-  if (!evMeta) { evMeta = readJSON("events.meta.json"); if (evMeta) console.warn("[notify] GH Pages 不可达，回退本地 events 副本"); }
+  const meta = readJSON("meta.json");
+  const evMeta = readJSON("events.meta.json");
   const problems = [];
 
   if (!meta) problems.push("价格 meta.json 缺失");

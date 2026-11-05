@@ -136,7 +136,16 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
   min-height: 84px; display: flex; flex-direction: column; justify-content: center;
 }
 .stat-card .k { font-size: 12px; color: var(--ink-soft); margin-bottom: 6px; }
-.stat-card .v { font-size: 19px; font-weight: 700; letter-spacing: .3px; font-variant-numeric: tabular-nums; }
+.stat-card .v { font-size: 19px; font-weight: 700; letter-spacing: .3px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+/* 历史区间：高/低竖排（与小程序 .his-range 一致），铜六位数在半宽卡内不再单行溢出 */
+.stat-card .v.his-range { font-size: 18px; line-height: 1.25; display: flex; flex-direction: column; gap: 2px; margin-top: 5px; }
+.stat-card .v.his-range .hr-row { display: flex; align-items: baseline; gap: 6px; }
+.stat-card .v.his-range .hr-key { font-size: 12px; font-weight: 600; flex: 0 0 auto; }
+.stat-card .v.his-range .hr-key.up { color: var(--up); }
+.stat-card .v.his-range .hr-key.down { color: var(--down); }
+.stat-card .v.his-range .hr-val { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.stat-card .v.his-range .hr-val.up { color: var(--up); }
+.stat-card .v.his-range .hr-val.down { color: var(--down); }
 .stat-card .sub { font-size: 12px; margin-top: 4px; font-weight: 600; }
 .v.up, .sub.up { color: var(--up); }
 .v.down, .sub.down { color: var(--down); }
@@ -427,7 +436,7 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
   .control-group .chip { padding: 2px 8px; font-size: 11px; }
   .stats { grid-template-columns: repeat(2, 1fr); gap: 10px; }
   .stat-card { min-height: 80px; padding: 10px 12px; }
-  .stat-card .v { font-size: 18px; }
+  .stat-card .v { font-size: 20px; }
   #chart { height: 360px; }
   .events-head h2 { font-size: 15px; }
   .event-item .ei-title { font-size: 14px; }
