@@ -246,8 +246,8 @@
     renderUpdateTimes();
     state.eventPage = 1;
     syncGranAvailability(); // 铜无小时线时禁用「时」选项
-    renderChart();
-    computeAndRenderStats();
+    computeAndRenderStats(); // 四卡先算：图表渲染异常不得影响数字
+    safeRenderChart();
     renderEvents();
     // 最新价由 startAutoRefresh 的 1 分钟链路统一维护；切金属时 computeAndRenderStats
     // 会用已有现货立即重算，此处不重复抓取（C18 顶部时间闪烁教训）
@@ -440,6 +440,20 @@
   // 横轴 time 轴标签密度控制（axisLabel.hideOverlap 对 time 轴无效，自行按像素间距过滤）
   var lsXRange = null;        // 当前 dataZoom 窗口 [startMs, endMs]，渲染时写入
   var lsLastShown = -Infinity; // 最近一次显示的标签时间戳，供 formatter 间距判断
+  // 【1 分钟实时价·健壮性】快速连点「金属 / 市场 / 单位」会在同一帧内触发多次
+  // setOption(notMerge)，ECharts 重建坐标系时偶发 getAxesOnZeroOf / __ec_inner_ 竞态报错，
+  // 异常还会冒泡到事件回调，把后面的 computeAndRenderStats() 一起掐断（四卡停在上一个市场）。
+  // 对策：同帧多次请求合并到下一帧只渲染一次；渲染异常就地隔离，绝不影响数字重算。
+  var chartPending = false;
+  function safeRenderChart(sync) {
+    if (sync) { try { renderChart(); } catch (e) { console.warn("[chart] 渲染异常，保留上一帧：" + (e && e.message)); } return; }
+    if (chartPending) return;
+    chartPending = true;
+    requestAnimationFrame(function () {
+      chartPending = false;
+      try { renderChart(); } catch (e) { console.warn("[chart] 渲染异常，保留上一帧：" + (e && e.message)); }
+    });
+  }
   function renderChart() {
     var info = getSeriesSource();
     var d = state.data;
@@ -1080,8 +1094,8 @@
         state.data = await ensureMetal(state.metal);
         corrCache = {};           // 数据源更换，相关性缓存作废
         syncGranAvailability();    // 铜无小时线时禁用「时」选项
-        renderChart();
         computeAndRenderStats(); // 用新真源锚点 + 现有实时现货重算四卡
+        safeRenderChart();
       }
       if (eventsChanged) {
         state.eventsMeta = evMeta;
@@ -1132,7 +1146,7 @@
       var m = btn.dataset.market;
       state.markets[m] = !state.markets[m];
       btn.classList.toggle("active", state.markets[m]);
-      if (state.data) { renderChart(); computeAndRenderStats(); }
+      if (state.data) { computeAndRenderStats(); safeRenderChart(); }
     });
 
     document.querySelector(".granularity").addEventListener("click", function (e) {
@@ -1141,7 +1155,7 @@
       [].forEach.call(this.querySelectorAll(".chip"), function (t) { t.classList.remove("active"); });
       btn.classList.add("active");
       state.gran = btn.dataset.gran;
-      if (state.data) renderChart();
+      if (state.data) safeRenderChart();
     });
 
     document.getElementById("unitToggle").addEventListener("click", function (e) {
@@ -1149,7 +1163,7 @@
       state.gram = (btn.dataset.unit === "gram");
       [].forEach.call(this.querySelectorAll(".chip"), function (t) { t.classList.remove("active"); });
       btn.classList.add("active");
-      if (state.data) { renderChart(); computeAndRenderStats(); }
+      if (state.data) { computeAndRenderStats(); safeRenderChart(); }
     });
 
     document.getElementById("eventFilter").addEventListener("click", function (e) {
@@ -1183,7 +1197,7 @@
       } else if (document.exitFullscreen) {
         document.exitFullscreen();
       }
-      setTimeout(function () { if (state.data) renderChart(); }, 200);
+      setTimeout(function () { if (state.data) safeRenderChart(); }, 200);
     });
 
     var lsBtn = document.getElementById("landscapeBtn");
@@ -1228,7 +1242,7 @@
       st.style.width = "";
       st.style.height = "";
     }
-    renderChart();
+    safeRenderChart(true);
     if (chart) chart.resize();
     setTimeout(function () { if (chart) chart.resize(); }, 50);
     setTimeout(function () { if (chart) chart.resize(); }, 300);
@@ -1265,7 +1279,7 @@
     document.body.style.overflow = "";
     lsActive = false;
     lsPortrait = null;
-    renderChart();
+    safeRenderChart(true);
     setTimeout(function () { if (chart) chart.resize(); }, 200);
   }
 
