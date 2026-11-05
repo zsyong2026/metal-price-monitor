@@ -52,9 +52,10 @@ html, body { margin: 0; padding: 0; }
 body {
   background: var(--bg);
   color: var(--ink);
-  /* 【免费字体·三端统一】思源黑体 Noto Sans SC 置首（网页端经 Google 中国镜像加载；
-     小程序端声明一致，未加载时回退系统字体，视觉一致且不影响加载速度） */
-  font-family: "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+  /* 【三端字体统一·改】不再加载 Noto Sans SC：小程序无法加载全量中文字体（会拖崩首屏），
+     原先"网页用 Noto、小程序回退系统字体"导致两端字形不一致。现三端统一用系统无衬线字体栈，
+     iOS=PingFang SC、Android=系统黑体、桌面=Microsoft YaHei/系统，三端字形一致、零网络字体依赖。 */
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   line-height: 1.45;
 }
@@ -85,6 +86,8 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 .update-time b { color: var(--ink); font-weight: 600; }
 .badge { font-size: 11px; padding: 4px 9px; border-radius: 999px; font-weight: 600; }
 .badge-warn { background: rgba(212,160,23,.16); color: var(--gold-deep); border: 1px solid rgba(212,160,23,.4); }
+/* 真实/现货数据徽章：与小程序 .badge-real 完全一致的绿色（三端统一；原先 .badge-ok 漏定义，真实数据仍带初始金色 badge-warn） */
+.badge-ok { background: rgba(15,157,88,.12); color: #0b7a43; border: 1px solid rgba(15,157,88,.35); }
 
 /* Metal tabs */
 .metal-tabs {
@@ -138,7 +141,7 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
   min-height: 84px; display: flex; flex-direction: column; justify-content: center;
 }
 .stat-card .k { font-size: 12px; color: var(--ink-soft); margin-bottom: 6px; }
-.stat-card .v { font-size: 19px; font-weight: 700; letter-spacing: .3px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.stat-card .v { font-size: 22px; font-weight: 700; letter-spacing: .3px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 /* 历史区间：高/低竖排（与小程序 .his-range 一致），铜六位数在半宽卡内不再单行溢出 */
 .stat-card .v.his-range { font-size: 18px; line-height: 1.25; display: flex; flex-direction: column; gap: 2px; margin-top: 5px; }
 .stat-card .v.his-range .hr-row { display: flex; align-items: baseline; gap: 6px; }
