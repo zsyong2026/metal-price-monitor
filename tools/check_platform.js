@@ -29,8 +29,11 @@ const GH_PAGES_CANON = "https://zsyong2026.github.io/metal-price-monitor/data";
 const TIMEOUT_MS = 15000;
 // 电脑网页版落后真源超过 60 分钟才提示（它每 15 分钟同步一次，正常落后 < 15 分钟）
 const DRIFT_WARN_MIN = 60;
-// 平台刚重启时的宽限期：新副本启动后几秒内就能同步好，期间不算故障（避免部署后误报）
-const COLD_START_GRACE_MIN = 20;
+// 平台刚重启时的宽限期。实测托管环境约每 5~6 分钟回收一次进程，重启后 ~4 秒即可从真源同步完成。
+// 【2026-11-05】原设 20 分钟 → 进程根本活不到 20 分钟，宽限期永不退出，巡检形同虚设
+//   （线上日志每轮都是「刚重启，尚在同步，本轮不提示」）。收窄到 3 分钟：既盖住正常冷启动，
+//   又能在平台真卡住时及时在日志留痕（默认仍不推企微）。
+const COLD_START_GRACE_MIN = 3;
 // 部署滚动更新窗口内新旧副本并存，单次采样会随机命中旧副本 → 采样多次取数据最新的一份
 const PROBE_SAMPLES = 4;
 // 全失败时的二次确认（间隔 + 采样次数），避免一次网络抖动就报
@@ -116,6 +119,7 @@ function ageMin(iso) {
 
 (async () => {
   const notes = []; // 低优先级提示（非严重告警）
+  let skippedByColdStart = false;
 
   // 先确认真源本身是否健康（仅供参考，不在此告警——真源停更由 notify_run.js 负责）
   let canon = null;
@@ -165,7 +169,10 @@ function ageMin(iso) {
     const coldStartExpired = coldStart && (!isNaN(upMin) && upMin > COLD_START_GRACE_MIN);
 
     if (coldStart && !coldStartExpired) {
-      console.log("[check_platform] 电脑网页版刚重启，尚在同步，本轮不提示");
+      skippedByColdStart = true;
+      console.log("[check_platform] 电脑网页版刚重启（" +
+        (isNaN(upMin) ? "启动时间未知" : Math.round(upMin) + " 分钟") +
+        "），冷启动宽限期内跳过判定");
     } else if (health.lastGenOk === false) {
       // 平台自报最近一轮真源同步失败：仅影响电脑网页版
       notes.push("电脑网页版最近一次同步最新数据失败，目前可能显示的是稍旧的价格" +
@@ -208,6 +215,8 @@ function ageMin(iso) {
     } catch (e) {
       console.warn("[check_platform] 提示发送失败：" + (e && e.message));
     }
+  } else if (skippedByColdStart) {
+    console.log("[check_platform] 本轮处于冷启动宽限期，未作判定（非故障）；手机网页版 / 微信小程序不受影响");
   } else {
     console.log("[check_platform] 电脑网页版数据源正常（手机网页版 / 微信小程序不受影响）");
   }
