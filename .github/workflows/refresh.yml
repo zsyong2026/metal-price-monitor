@@ -40,7 +40,7 @@ jobs:
             git push origin HEAD:main || echo "推送冲突，下一轮重试"
           fi
 
-      - name: 巡检平台真源（生成成功 / 数据新鲜 / 镜像）—— 仅信息，不阻断
+      - name: 巡检电脑网页版数据源（低优先级，仅日志）
         if: always()
         continue-on-error: true
         run: node tools/check_platform.js
@@ -48,6 +48,26 @@ jobs:
       - name: 数据健康巡检与异常告警（推送企业微信）
         if: always()
         run: node tools/notify_run.js check
+
+      # 【2026-11-05 修复告警刷屏】巡检写下的节流状态必须回写仓库，否则每轮 checkout
+      #   都是全新工作树，跨进程去重 100% 失效（实测同一条提示每 15 分钟推一次）。
+      #   只提交两个状态文件，不碰数据文件；无变化则跳过，避免制造空提交。
+      - name: 回写告警节流状态（跨轮去重生效）
+        if: always()
+        continue-on-error: true
+        run: |
+          git config user.name "metal-bot"
+          git config user.email "actions@github.com"
+          for f in data/.notify-throttle.json data/.alert-state.json; do
+            if [ -f "$f" ]; then git add -f "$f"; fi
+          done
+          if git diff --cached --quiet; then
+            echo "告警状态无变化，跳过提交"
+          else
+            git commit -m "chore: 告警节流状态回写 $(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
+            git pull --rebase origin main || { git rebase --abort 2>/dev/null || true; }
+            git push origin HEAD:main || echo "状态推送冲突，下一轮重试"
+          fi
 
       - name: 工作流失败兜底告警（推送企业微信）
         if: failure()
