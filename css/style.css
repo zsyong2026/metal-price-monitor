@@ -142,16 +142,27 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 }
 .stat-card .k { font-size: 12px; color: var(--ink-soft); margin-bottom: 6px; }
 .stat-card .v { font-size: 22px; font-weight: 700; letter-spacing: .3px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-/* 历史区间：高/低竖排（与小程序 .his-range 一致），铜六位数在半宽卡内不再单行溢出 */
-.stat-card .v.his-range { line-height: 1.25; display: flex; flex-direction: column; gap: 2px; margin-top: 5px; }
-.stat-card .v.his-range .hr-row { display: flex; align-items: baseline; gap: 4px; }
-.stat-card .v.his-range .hr-key { font-size: 11px; font-weight: 600; flex: 0 0 auto; }
-.stat-card .v.his-range .hr-key.up { color: var(--up); }
-.stat-card .v.his-range .hr-key.down { color: var(--down); }
+/* 历史区间：高/低竖排（与小程序 .his-range 一致），铜六位数在半宽卡内不再单行溢出。
+   【修复·选择器不匹配】同时兼容两种 DOM：①同一元素 .v.his-range（现行，与小程序一致）
+   ②.v 内嵌 .his-range（旧结构）。旧版只写了①，而 app.js 生成的是②，导致下面所有
+   15px/600 与高红低绿规则全部落空，数字继承 .v 的 22px/700 黑字 —— 这就是「改不过来」的根因。 */
+.stat-card .v.his-range,
+.stat-card .v .his-range { font-size: 15px; line-height: 1.25; display: flex; flex-direction: column; gap: 2px; margin-top: 5px; }
+.stat-card .v.his-range .hr-row,
+.stat-card .v .his-range .hr-row { display: flex; align-items: baseline; gap: 4px; }
+.stat-card .v.his-range .hr-key,
+.stat-card .v .his-range .hr-key { font-size: 11px; font-weight: 600; flex: 0 0 auto; }
+.stat-card .v.his-range .hr-key.up,
+.stat-card .v .his-range .hr-key.up { color: var(--up); }
+.stat-card .v.his-range .hr-key.down,
+.stat-card .v .his-range .hr-key.down { color: var(--down); }
 /* 历史区间明确弱于主数值（22px/700）：15px/600 + 高红低绿语义色，作补充注释不抢焦点（三端统一） */
-.stat-card .v.his-range .hr-val { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.stat-card .v.his-range .hr-val.up { color: var(--up); }
-.stat-card .v.his-range .hr-val.down { color: var(--down); }
+.stat-card .v.his-range .hr-val,
+.stat-card .v .his-range .hr-val { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.stat-card .v.his-range .hr-val.up,
+.stat-card .v .his-range .hr-val.up { color: var(--up); }
+.stat-card .v.his-range .hr-val.down,
+.stat-card .v .his-range .hr-val.down { color: var(--down); }
 /* 【指标看板统一·改】副行恒为灰色弱提示（对齐小程序 .s 11px/ink-soft），
    不再继承涨跌色；涨跌色只落在主数值 .v，避免「一卡两红」显花 */
 .stat-card .sub { font-size: 11px; margin-top: 4px; font-weight: 500; color: var(--ink-soft); }
