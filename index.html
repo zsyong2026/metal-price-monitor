@@ -5,14 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>金属价格收集 · 金 / 银 / 铜</title>
   <meta name="description" content="金属价格收集：金、银、铜的国内/香港/伦敦多市场报价与重大事件，支持年/月/天/时曲线与时间轴滑动缩放。" />
-  <!-- 【免费字体·三端统一】思源黑体 Noto Sans SC（SIL OFL 永久免费、可商用）。
-       用 Google 中国镜像 fonts.googleapis.cn（国内可达）+ display=swap：先以系统字体显示文本、
-       字体到位后无感替换，不阻塞首屏；即便字体加载失败也只回退系统字体，不影响功能。 -->
-  <link rel="preconnect" href="https://fonts.googleapis.cn" crossorigin />
-  <link rel="preconnect" href="https://fonts.gstatic.cn" crossorigin />
+  <!-- 【三端字体统一·改】移除 Noto Sans SC：小程序无法加载全量中文字体（会拖崩首屏），
+       导致网页(Noto)与小程序(系统字体)字形不一致；现三端统一用系统无衬线字体，零网络字体依赖。
+       下方 preconnect 仅用于数据请求（GH Pages / jsDelivr），与字体无关。 -->
   <link rel="preconnect" href="https://zsyong2026.github.io" crossorigin />
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.cn/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap" />
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
