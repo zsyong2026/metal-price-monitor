@@ -24,6 +24,23 @@
   var chart = null;
   var cache = {};
 
+  /* ---------- 最新价 1 分钟实时层（三端同口径）----------
+     真源（GH Pages / bundle）每 15 分钟生成一版，承载历史曲线、事件与校验；
+     「最新价」单独旁路直连 gold-api.com 实时现货，每 60 秒拉一次，只局部刷新指标看板。
+     覆盖：金/银/铜 × 伦敦/国内/香港 × 原始单位/元克。
+       伦敦 = 真实现货（铜由 美元/磅 折 美元/吨）；
+       香港 = 伦敦 × 美元兑港币（沿用真源 hkdcny 反推，三端一致）；
+       国内 = 保持真源最近一次「内外盘真实比价」（含升水/汇率），随国际现货按比例联动，
+              属【联动价】而非独立实时成交价，UI 明确标注，不冒充真实内盘报价。
+     任一轮抓取失败：静默保留上一轮报价与时间戳，顶部时间不回退、不闪烁（C18 教训）。 */
+  var SPOT_API = "https://api.gold-api.com/price/";
+  var SPOT_SYMBOL = { gold: "XAU", silver: "XAG", copper: "HG" };
+  var SPOT_METALS = ["gold", "silver", "copper"];
+  var LB_PER_TON = 2204.62262;        // COMEX HG 报价为 美元/磅，1 吨 = 2204.62262 磅
+  var SPOT_REFRESH_MS = 60 * 1000;    // 最新价：1 分钟
+  var SPOT_MIN_GAP_MS = 20 * 1000;    // 页面回前台时允许立即重抓的最小间隔
+  var spotState = { quotes: {}, lastOkAt: 0, fetching: false };
+
   /* ---------- 工具 ---------- */
   function fmtNum(v) {
     if (v == null || isNaN(v)) return "—";
@@ -98,8 +115,10 @@
   //   · 手机网页(GH Pages)→ 浏览器跨域读平台 /api/（API_BASE 为绝对地址 + sharecode；CORS *）
   //   · 微信小程序       → 云函数 → 平台 /api/bundle（微信 UA 被网关拦，故走云函数）
   // GitHub Pages 仅作兜底壳（其仍由 Actions 不定期刷新）。
-  var PLATFORM_HOST = "https://metal-price-monitor.app.workbuddy.host";
-  var SHARE = "POOW32T4LI";                 // 平台网关鉴权用 sharecode（与云函数同款，可嵌入前端）
+  // 【2026-11-05】同步为在用的新平台链接：老域名 + POOW32T4LI 已 404「链接已失效」，
+  //   与 tools/check_platform.js 的告警误报是同一个坑。GH Pages 静态壳优先读真源，此处仅作跨域兜底。
+  var PLATFORM_HOST = "https://metal-price-mp.app.workbuddy.host";
+  var SHARE = "YAC2PRXREO";                // 平台网关鉴权用 sharecode（与云函数同款，可嵌入前端）
   var STATIC = !!window.__STATIC__;          // 手机网页静态壳 = 1；PC 平台版 = undefined
   // 平台 API 基址：PC 同源（相对）｜手机跨域（绝对 + sharecode）
   function apiUrl(p) {
@@ -128,6 +147,41 @@
       return pts.map(function (p) { return [p[0], round2(p[1] / OZ2G * fx.hkdcny)]; });
     }
     return pts; // domestic 本来就是 元/克
+  }
+
+  /* ---------- 实时现货换算（与 convertPts 完全同一套口径）---------- */
+  // 把「原始单位」的实时价折算到当前单位视图；铜不开放元/克，金银仅在 state.gram 时折算
+  function convertSpotValue(v, market, metal, gram, fx) {
+    if (!(metal === "gold" || metal === "silver") || !gram) return v;
+    if (market === "london") return round2(v / OZ2G * fx.usdcny);
+    if (market === "hongkong") return round2(v / OZ2G * fx.hkdcny);
+    return v; // domestic 本来就是 元/克
+  }
+  // 真源末端值：作为「内外盘真实比价」的锚（同一版数据，三端一致）
+  function anchorOf(d, market) {
+    var arr = d && d.series && d.series[market];
+    if (!arr || !arr.length) return null;
+    var v = arr[arr.length - 1][1];
+    return isFinite(v) && v > 0 ? v : null;
+  }
+  // 某金属在当前真源锚点下的三市场实时价（原始单位）；无报价返回 null
+  function livePricesFor(metal, d) {
+    var q = spotState.quotes[metal];
+    if (!q || !isFinite(q.price) || q.price <= 0) return null;
+    var fx = fxOf(d);
+    var usdhkd = fx.hkdcny > 0 ? fx.usdcny / fx.hkdcny : 7.8;
+    var lNow = metal === "copper" ? q.price * LB_PER_TON : q.price;
+    var lRef = anchorOf(d, "london"), dRef = anchorOf(d, "domestic");
+    // 国内 = 真源最近一次真实比价 × 国际现货涨幅（保住升水，不硬编码系数）
+    var dNow = (lRef && dRef) ? dRef * (lNow / lRef) : null;
+    if (!isFinite(dNow) || dNow <= 0) dNow = null;
+    return {
+      london: round2(lNow),
+      domestic: dNow == null ? null : round2(dNow),
+      hongkong: round2(lNow * usdhkd),
+      ts: q.ts || "",
+      linked: !!(lRef && dRef),
+    };
   }
 
   /* ---------- 数据加载 ---------- */
@@ -197,25 +251,31 @@
     renderChart();
     computeAndRenderStats();
     renderEvents();
-    refreshLiveSpot();
+    // 最新价由 startAutoRefresh 的 1 分钟链路统一维护；切金属时 computeAndRenderStats
+    // 会用已有现货立即重算，此处不重复抓取（C18 顶部时间闪烁教训）
   }
 
   // 顶部徽标 + 底部免责/更新策略文案（bundle 命中与原分散请求两条路径共用）
   function setupMetaUI() {
-    document.getElementById("disclaimer").innerHTML = state.meta.disclaimer +
-      " <br><span style='color:var(--ink-soft)'>更新策略：" +
-      state.meta.updatePolicy.hourly + " ｜ " + state.meta.updatePolicy.daily + " ｜ " + state.meta.updatePolicy.history + "</span>";
+    // 【1 分钟实时价·改】不再直接展示真源里的 updatePolicy 文案（那套仍写「每 15 分钟抓一次现货」，
+    //   与最新价 1 分钟直连的新口径矛盾）。前端统一改写为三层频率 + 市场口径，三端同文案。
+    document.getElementById("disclaimer").innerHTML =
+      "数据说明：伦敦 / 香港为 <strong>gold-api.com 实时现货</strong>（每 1 分钟刷新；" +
+      "铜由美元/磅折算为美元/吨，香港按真实汇率折算）；国内为按最近一次真实内外盘比价" +
+      "随国际现货联动的<strong>联动价</strong>，非独立实时成交价。历史曲线为新浪国际期货 / " +
+      "东方财富真实日K，重大事件由公开财经资讯归纳，二者每 15 分钟由真源发布一次。" +
+      " <br><span style='color:var(--ink-soft)'>更新频率：最新价 1 分钟 ｜ 曲线与校验 15 分钟 ｜ 事件约 1 小时；任一校验不通过保留上一版数据。</span>";
     var b = document.getElementById("dataModeBadge");
+    var liveTitle = "最新价：直连实时现货，每 1 分钟刷新；国内为按真实内外盘比价联动的联动价；历史曲线 / 事件每 15 分钟由真源发布";
     if (state.meta.dataMode === "real") {
-      b.textContent = "真实数据"; b.className = "badge badge-ok";
+      b.textContent = "真实数据"; b.className = "badge badge-ok"; b.title = liveTitle;
     } else if (state.meta.dataMode === "spot") {
-      b.textContent = "真实现货"; b.className = "badge badge-ok";
-      b.title = "最新价为真实现货（每15分钟例行抓取），历史曲线为锚定建模趋势";
+      b.textContent = "真实现货"; b.className = "badge badge-ok"; b.title = liveTitle;
     } else {
       // 非 real/spot（静态托管或建模兜底）：与小程序第三态口径统一，不显示「建模数据」这种
       // 自我否定的措辞（C08 反馈），改称「缓存数据」并保留说明 tooltip
       b.textContent = "缓存数据";
-      b.title = "展示最近一次成功生成的数据快照（实时行情获取失败时自动进入该模式）";
+      b.title = "展示最近一次成功生成的数据快照（实时行情获取失败时自动进入该模式）；" + liveTitle;
     }
   }
 
@@ -584,7 +644,12 @@
     var pts = convertPts(raw, primary, fx);
     var box = document.getElementById("stats");
     if (pts.length < 2) { box.innerHTML = ""; return; }
-    var latest = pts[pts.length - 1][1];
+    // 【1 分钟实时价】有现货则用「当前市场 + 当前单位」下的实时价，否则回退真源曲线末端（15 分钟版）
+    var live = livePricesFor(state.metal, d);
+    var liveRaw = live && live[primary] != null ? live[primary] : null;
+    var latest = liveRaw != null
+      ? convertSpotValue(liveRaw, primary, state.metal, state.gram, fx)
+      : pts[pts.length - 1][1];
     var prev = pts[pts.length - 2][1];
     var todayPct = ((latest - prev) / prev) * 100;
     // 近一年：按时间戳取约 365 天前的点（真实日K仅含交易日，不能按条数索引）
@@ -597,7 +662,11 @@
     var yearPct = ((latest - yearVal) / yearVal) * 100;
     var hi = -Infinity, lo = Infinity;
     for (var i = 0; i < pts.length; i++) { var v = pts[i][1]; if (v > hi) hi = v; if (v < lo) lo = v; }
+    // 最新价刷新后历史区间一并取极值，避免「最新价高于历史高点」这种自相矛盾
+    hi = Math.max(hi, latest); lo = Math.min(lo, latest);
     var unit = useGram() ? "元/克" : d.unit[primary];
+    // 如实标注来源：国内为联动价、伦敦/香港为真实现货；未拿到现货时沿用真源口径不加后缀
+    var unitLine = unit + (liveRaw != null ? (primary === "domestic" ? " · 联动" : " · 实时") : "");
 
     function cls(p) { return p >= 0 ? "up" : "down"; }
     // 【指标看板统一·改】四卡一律「标题 / 主数值 / 副行」三层结构，与小程序完全对齐：
@@ -607,7 +676,7 @@
     var spanMs = pts.length > 1 ? (pts[pts.length - 1][0] - pts[0][0]) : 0;
     var spanYears = Math.max(1, Math.round(spanMs / (365 * 86400000) * 10) / 10);
     box.innerHTML =
-      card("最新价（" + MARKET_CN[primary] + "）", fmtNum(latest), "", unit) +
+      card("最新价（" + MARKET_CN[primary] + "）", fmtNum(latest), "", unitLine) +
       card("最新日涨跌", fmtPct(todayPct), cls(todayPct), dayAbs) +
       card("近一年涨跌", fmtPct(yearPct), cls(yearPct), (pts.length - idxYear) + " 个数据点") +
       // 【修复选择器不匹配】history 容器必须与小程序一致为「同一元素 .v.his-range」，
@@ -883,36 +952,84 @@
       "</div>";
   }
 
-  /* ---------- 实时现货（C18 已停用）----------
-     历史版本在页面打开时由浏览器直连 gold-api.com 把末端价格刷成「实时价」，并据此把顶部
-     「更新时间」覆写成现货时间。这导致：① 三端时间戳不一致（PC/手机显示现货时间、小程序显示
-     生成时间）；② 顶部时间从「数据生成时间」一闪而过变成「现货时间」（用户反馈 09:14→10:02）。
-     C18 统一原则：三端数据严格同源（平台每 15 分钟生成的那一版），顶部「更新时间」恒等于
-     数据生成时间，不再叠加实时现货，彻底消除闪烁与多端不一致。故本函数停用。 */
-  async function refreshLiveSpot() { /* C18 停用：数据统一为平台 15 分钟生成版，不再叠实时现货 */ }
+  /* ---------- 最新价 1 分钟实时链路（C18 停用逻辑的重建）----------
+     C18 当年停用浏览器直连现货，原因是「三端时间戳不一致 + 顶部时间闪烁」。
+     本次重新启用但换了做法，两条老问题都不再成立：
+       ① 三端一致：PC 网页 / 手机网页 / 小程序（云函数代理）全部读同一份 gold-api 现货，
+          并用同一份真源锚点换算；顶部时间统一取「当前金属的实时报价时刻」。
+       ② 不闪烁：只对成功响应更新报价，单品种 ts 不倒退；失败静默保留上一轮，时间只增不减。
+          fmtLocal 精确到分钟，金属之间几秒的报价时差也不会造成可见跳动。
+     严格边界：只刷新「最新价」及其派生指标，不重写历史曲线、不碰事件、不触发整页渲染。 */
+  async function fetchOneSpot(metal) {
+    var sym = SPOT_SYMBOL[metal];
+    // 【坑·勿改】gold-api.com 把「整段路径」当品种代码，加 ?_ts= 会直接 404（实测）。
+    //   也不要加 cache:"no-store" / 自定义头：会触发 CORS 预检 OPTIONS，跨域不稳。
+    //   它自身 Cache-Control: max-age=16，1 分钟轮询天然拿得到新价，裸 GET 即可。
+    var r = await fetch(SPOT_API + sym);
+    if (!r.ok) throw new Error("spot " + sym + " " + r.status);
+    var j = await r.json();
+    if (!j || !isFinite(j.price) || j.price <= 0) throw new Error("spot " + sym + " bad price");
+    return { metal: metal, price: j.price, ts: j.updatedAt || new Date().toISOString() };
+  }
+
+  async function refreshSpot(force) {
+    if (spotState.fetching) return;
+    if (!force && spotState.lastOkAt && Date.now() - spotState.lastOkAt < SPOT_MIN_GAP_MS) return;
+    spotState.fetching = true;
+    try {
+      var rs = await Promise.all(SPOT_METALS.map(function (m) {
+        return fetchOneSpot(m).catch(function () { return null; });
+      }));
+      var got = 0;
+      rs.forEach(function (r) {
+        if (!r) return;
+        var old = spotState.quotes[r.metal];
+        if (old && r.ts < old.ts) return; // 单品种时间戳只增不减
+        spotState.quotes[r.metal] = { price: r.price, ts: r.ts };
+        got++;
+      });
+      if (got) {
+        spotState.lastOkAt = Date.now();
+        if (state.data) {
+          computeAndRenderStats(); // 四卡一起重算，避免「最新价变了但涨跌没变」
+          renderUpdateTimes();    // 顶部 / 筛选区时间同步
+        }
+      }
+    } catch (e) { /* 静默保留上一轮：不回退、不闪烁 */ }
+    finally { spotState.fetching = false; }
+  }
 
   /* ---------- 更新时间：按数据真实入库时间展示（价格/事件分区，不随页面实时走） ---------- */
   function priceStamp() {
-    // C18：顶部「更新时间」恒等于数据生成时间（meta.generatedAt），三端一致，不再叠加实时现货
+    // 【1 分钟实时价】按当前金属的实时报价时刻；从未取到现货时才回退真源生成时间。
+    // 抓取失败不清除 spotState.quotes，故不会因一次网络抖动把时间倒退回 15 分钟前（不闪烁）。
+    var live = state.data ? livePricesFor(state.metal, state.data) : null;
+    return (live && live.ts) || (state.meta && state.meta.generatedAt) || (state.data && state.data.lastUpdate) || "";
+  }
+  function curveStamp() {
     return (state.meta && state.meta.generatedAt) || (state.data && state.data.lastUpdate) || "";
   }
   function eventsStamp() {
     return (state.eventsMeta && state.eventsMeta.updatedAt) || "";
   }
   function renderUpdateTimes() {
-    var p = priceStamp(), e = eventsStamp();
-    // 右上角：价格与事件中较新的真实入库时间（ISO 同格式可字典序比较）
-    var newest = e > p ? e : p;
+    var p = priceStamp(), c = curveStamp(), e = eventsStamp();
     var el = document.getElementById("lastUpdate");
     if (el) {
-      el.textContent = fmtLocal(newest);
-      el.title = "价格更新于 " + fmtLocal(p) + "\n事件更新于 " + fmtLocal(e);
+      el.textContent = fmtLocal(p);
+      el.title = "最新价更新于 " + fmtLocal(p) + "（每 1 分钟）\n" +
+        "曲线更新于 " + fmtLocal(c) + "（每 15 分钟）\n" +
+        "事件更新于 " + fmtLocal(e) + "（约每 1 小时）";
     }
     var pe = document.getElementById("priceUpdate");
     if (pe) {
-      // 文案精简：只展示更新时间（数据截至日期看图表示末刻度，不在文案重复）
-      pe.textContent = "价格更新于 " + fmtLocal(p);
-      pe.title = "价格数据截至 " + (state.data && state.data.lastUpdate ? String(state.data.lastUpdate).slice(0, 10) : "—");
+      // 频率分层：最新价 1 分钟 / 曲线 15 分钟 / 事件 1 小时，
+      // 避免把顶部时间误读成「所有数据都每分钟更新」。
+      pe.textContent = "最新价 " + fmtLocal(p) + " · 1 分钟";
+      pe.title = "最新价：直连 gold-api.com 实时现货，每 1 分钟刷新（" + fmtLocal(p) + "）\n" +
+        "历史曲线与校验：每 15 分钟由真源发布（" + fmtLocal(c) + "）\n" +
+        "重大事件：约每 1 小时（" + fmtLocal(e) + "）\n" +
+        "国内市场：按最近一次真实内外盘比价随国际现货联动（联动价）";
     }
     var ee = document.getElementById("eventsUpdate");
     if (ee) {
@@ -933,13 +1050,18 @@
   /* ---------- 主动更新：定时检查数据新版本，不依赖用户刷新/重进 ---------- */
   // C19：数据改为「平台生成器每 15 分钟生成 → 直推 GH Pages 镜像」，手机网页/已发布小程序
   // 读镜像、桌面端读平台，镜像落地比生成晚约 1~2 分钟 → 轮询周期收紧到 3 分钟，尽快追上。
-  var AUTO_REFRESH_MS = 3 * 60 * 1000; // 3 分钟一检（覆盖「15 分钟生成 + 镜像落地」链路）
+  var AUTO_REFRESH_MS = 3 * 60 * 1000; // 真源（曲线/事件）3 分钟一检
   var checking = false; // 防重入：轮询与 visibilitychange 可能并发
   function startAutoRefresh() {
+    // 两条独立节拍，互不干扰：
+    //   · 最新价：60 秒直连实时现货（不依赖真源 15 分钟生成）
+    //   · 真源 meta / events：3 分钟检查新版本（覆盖「15 分钟生成 + 镜像落地」链路）
+    refreshSpot(true);
+    setInterval(function () { refreshSpot(false); }, SPOT_REFRESH_MS);
     setInterval(checkDataUpdate, AUTO_REFRESH_MS);
     // 页面从后台/其它标签回来时立即检查一次（配合轮询，回来即是新的）
     document.addEventListener("visibilitychange", function () {
-      if (!document.hidden) checkDataUpdate();
+      if (!document.hidden) { checkDataUpdate(); refreshSpot(false); }
     });
   }
   async function checkDataUpdate() {
@@ -961,8 +1083,7 @@
         corrCache = {};           // 数据源更换，相关性缓存作废
         syncGranAvailability();    // 铜无小时线时禁用「时」选项
         renderChart();
-        computeAndRenderStats();
-        refreshLiveSpot();        // C18 已停用（不再叠实时现货，避免顶部时间闪烁）
+        computeAndRenderStats(); // 用新真源锚点 + 现有实时现货重算四卡
       }
       if (eventsChanged) {
         state.eventsMeta = evMeta;
