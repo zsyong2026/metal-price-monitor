@@ -610,11 +610,13 @@
       card("最新价（" + MARKET_CN[primary] + "）", fmtNum(latest), "", unit) +
       card("最新日涨跌", fmtPct(todayPct), cls(todayPct), dayAbs) +
       card("近一年涨跌", fmtPct(yearPct), cls(yearPct), (pts.length - idxYear) + " 个数据点") +
+      // 【修复选择器不匹配】history 容器必须与小程序一致为「同一元素 .v.his-range」，
+      // 不能是 .v 内再嵌一层 .his-range（旧写法导致 CSS .v.his-range 永不命中，
+      // 数字一直继承 .v 的 22px/700 黑字、且高低红绿不渲染）。
       card("历史区间",
-        "<div class='his-range'>" +
-          "<div class='hr-row'><span class='hr-key up'>高</span><span class='hr-val up'>" + fmtNum(hi) + "</span></div>" +
-          "<div class='hr-row'><span class='hr-key down'>低</span><span class='hr-val down'>" + fmtNum(lo) + "</span></div>" +
-        "</div>", "", "近 " + spanYears + " 年高低点");
+        "<div class='hr-row'><span class='hr-key up'>高</span><span class='hr-val up'>" + fmtNum(hi) + "</span></div>" +
+        "<div class='hr-row'><span class='hr-key down'>低</span><span class='hr-val down'>" + fmtNum(lo) + "</span></div>",
+        "his-range", "近 " + spanYears + " 年高低点");
   }
   function card(k, v, vCls, sub) {
     var s = sub != null ? "<div class='sub'>" + sub + "</div>" : "";
