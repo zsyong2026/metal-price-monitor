@@ -600,21 +600,25 @@
     var unit = useGram() ? "元/克" : d.unit[primary];
 
     function cls(p) { return p >= 0 ? "up" : "down"; }
+    // 【指标看板统一·改】四卡一律「标题 / 主数值 / 副行」三层结构，与小程序完全对齐：
+    //   ① 涨跌类卡片以「涨跌幅 %」为主数值（跨品种可比），绝对值+单位下沉为灰色副行；
+    //   ② 单位不塞标题（四卡标题等长）；③ 仅主数值带涨跌色，副行恒灰，避免一卡两色一片红。
+    var dayAbs = (latest - prev >= 0 ? "+" : "") + fmtNum(latest - prev) + " " + unit;
+    var spanMs = pts.length > 1 ? (pts[pts.length - 1][0] - pts[0][0]) : 0;
+    var spanYears = Math.max(1, Math.round(spanMs / (365 * 86400000) * 10) / 10);
     box.innerHTML =
-      card("最新价（" + MARKET_CN[primary] + "）", fmtNum(latest) + " <span style='font-size:12px;color:var(--ink-soft)'>" + unit + "</span>") +
-      card("最新日涨跌", fmtNum(latest - prev), cls(todayPct), fmtPct(todayPct)) +
-      // 【三端拉齐】近一年涨跌：大号彩色 % + 小字数据点个数（与小程序一致，不再浪费大号位只显示小字 %）
+      card("最新价（" + MARKET_CN[primary] + "）", fmtNum(latest), "", unit) +
+      card("最新日涨跌", fmtPct(todayPct), cls(todayPct), dayAbs) +
       card("近一年涨跌", fmtPct(yearPct), cls(yearPct), (pts.length - idxYear) + " 个数据点") +
-      // 【三端拉齐】历史区间：高/低竖排（与小程序 .his-range 完全一致），避免铜六位数在半宽卡内单行溢出
-      card("历史区间 (" + unit + ")",
+      card("历史区间",
         "<div class='his-range'>" +
           "<div class='hr-row'><span class='hr-key up'>高</span><span class='hr-val up'>" + fmtNum(hi) + "</span></div>" +
           "<div class='hr-row'><span class='hr-key down'>低</span><span class='hr-val down'>" + fmtNum(lo) + "</span></div>" +
-        "</div>");
+        "</div>", "", "近 " + spanYears + " 年高低点");
   }
-  function card(k, v, subCls, sub) {
-    var s = sub != null ? "<div class='sub " + (subCls || "") + "'>" + sub + "</div>" : "";
-    return "<div class='stat-card'><div class='k'>" + k + "</div><div class='v " + (subCls || "") + "'>" + v + "</div>" + s + "</div>";
+  function card(k, v, vCls, sub) {
+    var s = sub != null ? "<div class='sub'>" + sub + "</div>" : "";
+    return "<div class='stat-card'><div class='k'>" + k + "</div><div class='v " + (vCls || "") + "'>" + v + "</div>" + s + "</div>";
   }
 
   /* ---------- 事件 ---------- */
