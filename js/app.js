@@ -108,15 +108,13 @@
     var s = location.search || "";
     return s.indexOf("sharecode=") >= 0 ? s : "";
   }
-  // 【C18 真源定调】平台版（metal-price-monitor.app.workbuddy.host）= 唯一真源生成器，
-  // 由 Node 服务每 15 分钟本地生成 data/*.json（不再依赖 GitHub Actions 定时器的易失效定时），
-  // 并对外 serve /api/*（CORS *）。三端统一读本服务的 /api/：
-  //   · PC 网页          → 同源 /api/（API_BASE 为空）
-  //   · 手机网页(GH Pages)→ 浏览器跨域读平台 /api/（API_BASE 为绝对地址 + sharecode；CORS *）
-  //   · 微信小程序       → 云函数 → 平台 /api/bundle（微信 UA 被网关拦，故走云函数）
-  // GitHub Pages 仅作兜底壳（其仍由 Actions 不定期刷新）。
-  // 【2026-11-05】同步为在用的新平台链接：老域名 + POOW32T4LI 已 404「链接已失效」，
-  //   与 tools/check_platform.js 的告警误报是同一个坑。GH Pages 静态壳优先读真源，此处仅作跨域兜底。
+  // 【C43/C45 真源定调（勿按旧注释回退）】
+  //   真源唯一写入者 = GitHub Actions refresh.yml：抓真实行情 → 校验 → 写 data/*.json → 提交 main；
+  //   平台版 = 纯只读代理 + workflow_dispatch 调度器，不本地生成、不反推真源。三端读同一真源：
+  //   · PC 网页           → 同源 /api/（API_BASE 为空）
+  //   · 手机网页(GH Pages) → GH Pages data/ 优先，平台 /api/ 跨域兜底
+  //   · 微信小程序        → GH Pages 直连为主，云函数 → 平台 /api/bundle 为备
+  // 【2026-11-05】老域名 + 旧 sharecode 已 404「链接已失效」，与 check_platform.js 告警误报是同一个坑。
   var PLATFORM_HOST = "https://metal-price-mp.app.workbuddy.host";
   var SHARE = "YAC2PRXREO";                // 平台网关鉴权用 sharecode（与云函数同款，可嵌入前端）
   var STATIC = !!window.__STATIC__;          // 手机网页静态壳 = 1；PC 平台版 = undefined
