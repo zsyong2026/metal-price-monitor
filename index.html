@@ -12,7 +12,31 @@
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
   <!-- 最新价每 60 秒直连实时现货，提前建连减少首次刷新延迟 -->
   <link rel="preconnect" href="https://api.gold-api.com" crossorigin />
+  <!-- 【2026-11-06 首屏提速①】1MB 的 ECharts 原本放在 body 末尾，浏览器要解析到那里才发现它。
+       preload 提前到 head 开始下载；脚本统一 defer，HTML 解析不再被同步脚本阻塞。 -->
+  <link rel="preload" as="script" href="js/vendor/echarts.min.js" />
   <link rel="stylesheet" href="css/style.css" />
+  <!-- 【2026-11-06 首屏提速②】早期数据预取：在 <head> 就把首屏最小集的 4 个小文件发出去，
+       与 ECharts 下载并行。旧链路要等 1MB 脚本下完 → DOMContentLoaded → app.js 才发请求，
+       实测手机网页数据请求被推迟到 +12.3s。预取结果挂在 window.__MM_EARLY__，
+       app.js 的 fileSources() 直接复用 Promise，不重复请求；带 15 分钟版本槽 _v 命中 CDN。
+       仅 GitHub Pages 静态壳启用；平台版由 server.js 同源 /api 供数，不预取本地旧快照。 -->
+  <script>
+  (function () {
+    var h = location.hostname;
+    var isStatic = /github\.io$/i.test(h) || h === "localhost" || h === "127.0.0.1";
+    window.__MM_EARLY_STATIC__ = isStatic;
+    if (!isStatic || typeof fetch !== "function") return;
+    var v = Math.floor(Date.now() / 900000);
+    window.__MM_EARLY__ = {};
+    ["meta.json", "events.json", "events.meta.json", "gold.json"].forEach(function (f) {
+      window.__MM_EARLY__[f] = fetch("data/" + f + "?_v=" + v).then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      });
+    });
+  })();
+  </script>
 </head>
 <body>
   <div class="head-fixed">
@@ -142,8 +166,8 @@
   </footer>
 
     <script>window.__STATIC__ = 1;</script>
-  <script src="js/vendor/echarts.min.js"></script>
-  <script src="js/event-dedupe.js"></script>
-  <script src="js/app.js"></script>
+  <script defer src="js/vendor/echarts.min.js"></script>
+  <script defer src="js/event-dedupe.js"></script>
+  <script defer src="js/app.js"></script>
 </body>
 </html>

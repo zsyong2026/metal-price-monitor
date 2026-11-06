@@ -131,12 +131,19 @@
     if (!STATIC) return p;                   // PC：同源相对路径即可
     return PLATFORM_HOST + p + (p.indexOf("?") >= 0 ? "&" : "?") + "sharecode=" + SHARE;
   }
+  // 【2026-11-06 首屏提速·缓存穿透改为「15 分钟版本槽」】
+  //   旧写法 _ts=Date.now() 让每个用户、每次刷新都是不同 URL → GH Pages / jsDelivr 边缘
+  //   缓存必然 MISS 回源；实测 556KB 的 bundle 因此要 17~31s，而 2.6KB 的 meta 只要 0.5~1.2s。
+  //   真源本来就每 15 分钟发布一版：用 _v=floor(now/15min) 作版本号，同一槽里三端/所有用户
+  //   共用同一 URL → CDN 命中；跨槽自动换 URL 拿新一版，新鲜度与 15 分钟节奏天然对齐。
+  var SLOT_MS = 15 * 60 * 1000;
+  function slot() { return Math.floor(Date.now() / SLOT_MS); }
   var CANON = "https://zsyong2026.github.io/metal-price-monitor/"; // 兜底：GitHub Pages 真源壳
-  function canon(u) { return u + (u.indexOf("?") >= 0 ? "&" : "?") + "_ts=" + Date.now(); }
+  function canon(u) { return u + (u.indexOf("?") >= 0 ? "&" : "?") + "_v=" + slot(); }
   // 【C48·韧性拉齐】jsDelivr 兜底：CORS:*，跨域直连。PC 网页经平台跨域访问时 GitHub Pages 会被 CORS 拦截，
   //   平台不可达时 jsDelivr 仍能给 PC/手机网页供数，与小程序的韧性对齐（小程序直连 GH Pages 主源）。
   var JSD = "https://cdn.jsdelivr.net/gh/zsyong2026/metal-price-monitor@main/";
-  function jsd(u) { return u + (u.indexOf("?") >= 0 ? "&" : "?") + "_ts=" + Date.now(); }
+  function jsd(u) { return u + (u.indexOf("?") >= 0 ? "&" : "?") + "_v=" + slot(); }
   function fxOf(d) {
     return (d && d.fx && d.fx.usdcny) ? d.fx : { usdcny: 7.1, hkdcny: 0.91 };
   }
@@ -199,30 +206,85 @@
   }
   // 依次尝试多个地址，命中可用即返回（平台 /api 优先，GH Pages / 本地静态兜底）
   // C18：手机网页静态壳也优先读平台 /api/（apiUrl 已转绝对地址 + sharecode，CORS * 跨域可达），
-  // GitHub Pages 作兜底；GH Pages 边缘缓存约 10 分钟，对兜底 data/ 请求加 _ts 穿透。
-  // 平台 /api/ 自身 Cache-Control: no-store，无需 _ts。
+  // GitHub Pages 作兜底；GH Pages 边缘缓存约 10 分钟，对兜底 data/ 请求加版本槽穿透。
+  // 平台 /api/ 自身 Cache-Control: no-store，无需版本槽。
   function bust(u) {
     if (u.indexOf("/api/") >= 0) return u;   // 平台 /api/ 已 no-store，不重复穿透
     if (!STATIC) return u;
-    if (u.indexOf("_ts=") >= 0) return u;     // 已是真源穿透 URL
-    return u + (u.indexOf("?") >= 0 ? "&" : "?") + "_ts=" + Date.now();
+    if (u.indexOf("_ts=") >= 0 || u.indexOf("_v=") >= 0) return u;  // 已是真源穿透 URL
+    return u + (u.indexOf("?") >= 0 ? "&" : "?") + "_v=" + slot();
   }
-  function loadFirst(urls) {
-    // 把相对 /api/ 翻成平台绝对地址（手机静态壳跨域；PC 同源不动），其余地址原样
-    var list = urls.map(function (u) {
-      return u.indexOf("/api/") === 0 ? apiUrl(u) : u;
+
+  /* ---------- 【2026-11-06 首屏提速】串行 waterfall → 并行竞速（hedged request） ----------
+     实测基线：PC 平台版首屏 3.688s、手机网页 GH Pages 19.268s。根因是 for-await 依次试 4 个
+     地址：排在第一个的跨域 GH Pages（556KB bundle 实测 17~31s）会把后面所有快源全部拖死，
+     数据请求又等 ECharts 同步脚本下载完（11.5s）才在 DOMContentLoaded 后发出，两者相乘。
+
+     loadRace：首选源 0ms 起跑，其余每 220ms 起跑一个；任一返回有效 JSON 立即 resolve 并
+     abort 其余请求；全部失败才 reject。正常情况只多付出 220ms，最坏耗时从 sum(全部候选)
+     压到 min(最快候选) + 220ms。候选仍全部指向同一真源（GH Pages / 平台只读代理 / jsDelivr），
+     不改变「三端同源」口径，平台依旧不写数据。 */
+  var HEDGE_GAP_MS = 220;
+  var FETCH_TIMEOUT_MS = 14000;
+  // PC 平台版的静态根 data/ 只是部署包里的旧快照（真源由 /api 走 Contents API 提供）。
+  // 并行竞速时它几乎必然最快返回，会把新版真源挤掉 → 数据倒退。故非静态壳下把它拆到
+  // 「二阶段兜底」：只有所有真源候选都失败才允许用本地旧快照，静态壳则仍把同源 data/ 当主源。
+  function loadRace(sources, validate) {
+    var main = [], local = [];
+    sources.forEach(function (s) {
+      if (!STATIC && typeof s === "string" && s.indexOf("data/") === 0) local.push(s);
+      else main.push(s);
     });
-    return (async function () {
-      var lastErr;
-      for (var i = 0; i < list.length; i++) {
-        try {
-          var r = await fetch(bust(list[i]), { cache: "no-store" });
-          if (r.ok) return await r.json();
-        } catch (e) { lastErr = e; }
-      }
-      throw new Error("加载失败: " + list.join(" | "));
-    })();
+    if (!main.length) { main = local; local = []; }
+    return raceOnce(main, validate).catch(function (e) {
+      if (!local.length) throw e;
+      return raceOnce(local, validate);
+    });
   }
+  function raceOnce(sources, validate) {
+    return new Promise(function (resolve, reject) {
+      var n = sources.length;
+      if (!n) { reject(new Error("无可用数据源")); return; }
+      var done = false, remaining = n, ctrls = [], lastErr = null;
+      var timer = setTimeout(function () {
+        if (!done) { done = true; clearAll(); reject(lastErr || new Error("数据源全部超时")); }
+      }, FETCH_TIMEOUT_MS + HEDGE_GAP_MS * n);
+      function clearAll() {
+        clearTimeout(timer);
+        ctrls.forEach(function (c) { try { c.abort(); } catch (e) {} });
+      }
+      function win(j) { if (done) return; done = true; clearAll(); resolve(j); }
+      function settle(e) {
+        if (e) lastErr = e;
+        remaining--;
+        if (remaining <= 0 && !done) { done = true; clearAll(); reject(lastErr || new Error("加载失败")); }
+      }
+      sources.forEach(function (src, i) {
+        var launch = function () {
+          if (done) { settle(); return; }
+          var ac = (typeof AbortController !== "undefined") ? new AbortController() : null;
+          if (ac) ctrls.push(ac);
+          var p;
+          try {
+            if (typeof src === "string") {
+              var u = src.indexOf("/api/") === 0 ? apiUrl(src) : src;
+              p = fetch(bust(u), { cache: "no-store", signal: ac ? ac.signal : undefined })
+                .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); });
+            } else {
+              // head 里的早期预取 Promise：直接复用，不重复发同一 URL
+              p = (typeof src === "function") ? src() : src;
+            }
+          } catch (e) { p = Promise.reject(e); }
+          Promise.resolve(p).then(function (j) {
+            if (validate && !validate(j)) throw new Error("数据校验未通过");
+            win(j);
+          }).catch(settle);
+        };
+        if (i === 0) launch(); else setTimeout(launch, i * HEDGE_GAP_MS);
+      });
+    });
+  }
+  function loadFirst(urls) { return loadRace(urls, null); }
 
   function ensureMetal(metal) {
     if (cache[metal]) return Promise.resolve(cache[metal]);
@@ -235,15 +297,118 @@
     });
   }
 
-  // 【性能·三端提速】bundle 一级加速源：1 次请求拿齐 6 文件（gold/silver/copper/meta/events/eventsMeta）。
-  // 端上优先试 bundle，命中即免去中心 6 次分散请求（网页端每条还 waterfall 试错 4 个地址）。
-  // 失败（bundle 缺失/损坏/不可达）直接抛错，由 init() 回退到原有分散请求逻辑，绝不劣化。
+  // 【性能·三端提速】bundle 加速源：1 次请求拿齐 6 文件。
+  // 【2026-11-06 修正】平台 /api/bundle 返回 { files: {...} }，GH Pages bundle.json 返回
+  //   { meta, metals, events, eventsMeta }；旧 tryBundle 只认后者，把最快的同源 /api/bundle
+  //   判成「bundle 不可用」白丢一次请求。此处统一 normalize，两条结构都能用。
+  function normalizeBundle(b) {
+    if (!b) return null;
+    if (!b.files) return b;
+    var f = b.files;
+    return {
+      meta: f["meta.json"],
+      eventsMeta: f["events.meta.json"] || null,
+      events: f["events.json"],
+      metals: { gold: f["gold.json"], silver: f["silver.json"], copper: f["copper.json"] },
+    };
+  }
+  function bundleValid(b) {
+    var x = normalizeBundle(b);
+    return !!(x && x.meta && x.meta.generatedAt && x.metals &&
+      x.metals.gold && x.metals.silver && x.metals.copper);
+  }
+  // 持久缓存的准入比整包宽松：meta + 至少一个金属即可秒开首屏。
+  // 首屏最小集本来就只拉当前金属，若强求三金属齐全，缓存会永远写不进去
+  // （本地真浏览器实测：三金属由后台补齐前 writeBootCache 一直不触发）。
+  // 缺的品种在切换时由 switchMetal → ensureMetal 按需补，不影响正确性。
+  function cacheValid(b) {
+    var x = normalizeBundle(b);
+    return !!(x && x.meta && x.meta.generatedAt && x.metals &&
+      (x.metals.gold || x.metals.silver || x.metals.copper));
+  }
+  // 端上持久缓存：二次进入 / 杀进程重进直接 0 网络秒开，后台再静默校验真源版本。
+  // 完整包约 550KB，localStorage 5MB 足够；写入失败（隐私模式/配额）静默忽略，不影响主链路。
+  var BOOT_KEY = "mm.boot.v3";
+  function readBootCache() {
+    try {
+      var s = localStorage.getItem(BOOT_KEY);
+      var b = s ? JSON.parse(s) : null;
+      if (!cacheValid(b)) return null;
+      lastWrittenStamp = b.meta.generatedAt || "";
+      return normalizeBundle(b);
+    } catch (e) { return null; }
+  }
+  var lastWrittenStamp = "";
+  function writeBootCache(b) {
+    try {
+      if (!cacheValid(b)) return;
+      var st = b.meta.generatedAt;
+      if (st && st === lastWrittenStamp) return;   // 同版本不重复写 550KB
+      lastWrittenStamp = st;
+      localStorage.setItem(BOOT_KEY, JSON.stringify(b));
+    } catch (e) {}
+  }
+  var bootData = null;
+  function mergeBoot(b) {
+    if (!bootData) bootData = { meta: null, events: null, eventsMeta: null, metals: {} };
+    if (b.meta) bootData.meta = b.meta;
+    if (b.events) bootData.events = b.events;
+    if (b.eventsMeta) bootData.eventsMeta = b.eventsMeta;
+    if (b.metals) {
+      ["gold", "silver", "copper"].forEach(function (m) {
+        if (b.metals[m]) { bootData.metals[m] = b.metals[m]; cache[m] = b.metals[m]; }
+      });
+    }
+    if (cacheValid(bootData)) writeBootCache(bootData);
+  }
+
   function tryBundle() {
-    var urls = [canon(CANON + "data/bundle.json"), jsd(JSD + "data/bundle.json"), "data/bundle.json"];
-    if (!STATIC) urls.push("/api/bundle" + shareQ()); // 平台若有 /api/bundle 则同源优先
-    return loadFirst(urls).then(function (b) {
-      if (b && b.meta && b.meta.generatedAt && b.metals && b.metals.gold && b.metals.silver && b.metals.copper) return b;
-      throw new Error("bundle 不可用");
+    // 【性能】静态壳：同源 data/ 打头（CDN 就近）；PC 平台版：同源 /api/bundle 打头（实测最快）。
+    // 候选仍是同一真源的三个只读出口，口径不漂移；loadRace 并行竞速，慢源不再拖死快源。
+    var local = "data/bundle.json";
+    var api = "/api/bundle" + shareQ();
+    var urls = STATIC
+      ? [local, canon(CANON + "data/bundle.json"), jsd(JSD + "data/bundle.json"), api]
+      : [api, local, canon(CANON + "data/bundle.json"), jsd(JSD + "data/bundle.json")];
+    return loadRace(urls, bundleValid).then(normalizeBundle);
+  }
+
+  // 单文件候选源：首屏只拉「当前金属 + meta + events + eventsMeta」4 个小文件并行，
+  // 而不是等 556KB 的整包（实测整包 17~31s，4 文件并行约 1.5~4.8s）。
+  var API_OF = {
+    "meta.json": "/api/meta", "events.json": "/api/events",
+    "events.meta.json": "/api/events-meta", "gold.json": "/api/data/gold",
+    "silver.json": "/api/data/silver", "copper.json": "/api/data/copper",
+  };
+  function fileSources(file) {
+    var rel = "data/" + file;
+    var urls = STATIC
+      ? [rel, canon(CANON + rel), jsd(JSD + rel), API_OF[file] + shareQ()]
+      : [API_OF[file] + shareQ(), rel, canon(CANON + rel), jsd(JSD + rel)];
+    var early = window.__MM_EARLY__ && window.__MM_EARLY__[file];
+    // 有 head 早期预取时复用它，并去掉与之重复的同源首源（避免同一 URL 发两遍）
+    if (early) return [early].concat(urls.slice(1));
+    return urls;
+  }
+  function loadMinimal(metal) {
+    var files = ["meta.json", "events.json", "events.meta.json", metal + ".json"];
+    return Promise.all(files.map(function (f) {
+      return loadRace(fileSources(f), null).catch(function () { return null; });
+    })).then(function (r) {
+      if (!r[0] || !r[0].generatedAt || !r[3] || !r[3].series) throw new Error("首屏最小集不完整");
+      var metals = {}; metals[metal] = r[3];
+      return { meta: r[0], events: r[1], eventsMeta: r[2], metals: metals };
+    });
+  }
+  // 首屏渲染后后台补齐另外两个金属，切换品种时零等待
+  function prefetchMetals() {
+    ["gold", "silver", "copper"].forEach(function (m) {
+      if (cache[m]) return;
+      loadRace(fileSources(m + ".json"), null).then(function (d) {
+        if (!d || !d.series) return;
+        var one = {}; one[m] = d;
+        mergeBoot({ metals: one });
+      }).catch(function () {});
     });
   }
 
@@ -273,7 +438,11 @@
       " <br><span style='color:var(--ink-soft)'>更新频率：最新价 60 秒 ｜ 曲线与校验 15 分钟 ｜ 事件约 1 小时；任一校验不通过保留上一版数据。</span>";
     var b = document.getElementById("dataModeBadge");
     var liveTitle = "最新价：直连实时现货，每 60 秒刷新（页面时间精确到秒）；国内为按真实内外盘比价联动的联动价；历史曲线 / 事件每 15 分钟由真源发布";
-    if (state.meta.dataMode === "real") {
+    // 【首屏提速】用本机缓存秒开时如实标「缓存数据」，后台拿到真源后由 boot() 清除标志并覆写
+    if (state.fromCache) {
+      b.textContent = "缓存数据"; b.className = "badge badge-warn";
+      b.title = "正在用本机上次成功的数据秒开，后台校验真源新版本中…（" + liveTitle + "）";
+    } else if (state.meta.dataMode === "real") {
       b.textContent = "真实数据"; b.className = "badge badge-ok"; b.title = liveTitle;
     } else if (state.meta.dataMode === "spot") {
       b.textContent = "真实现货"; b.className = "badge badge-ok"; b.title = liveTitle;
@@ -285,26 +454,52 @@
     }
   }
 
-  function init() {
-    parseHash();
-    // 【性能·三端提速】优先 1 次请求拿 bundle；命中即填充并渲染，省去中心 6 次分散请求（含 waterfall 试错）
-    tryBundle().then(function (b) {
-      state.meta = b.meta;
-      state.events = b.events;
-      state.eventsMeta = b.eventsMeta || null;
-      cache.gold = b.metals.gold; cache.silver = b.metals.silver; cache.copper = b.metals.copper;
+  /* ---------- 首屏启动（2026-11-06 重构） ----------
+     三条独立加速，互不阻塞：
+       ① 本机缓存：0 网络立即出图（徽标如实标「缓存数据」），后台静默换新版；
+       ② head 早期预取：数据请求在 HTML 解析到 <head> 时发出，与 1MB ECharts 下载并行；
+       ③ 两路并行取数：整包 bundle 与 4 个小文件最小集竞速，谁先有效谁渲染。
+     boot() 幂等：initChart / bindEvents / startAutoRefresh 只执行一次，后续只更新数据。 */
+  var booted = false;
+  function boot(b, fromCache) {
+    if (!b || !b.meta) return;
+    mergeBoot(b);
+    var stamp = b.meta.generatedAt;
+    // 同版本且已不是缓存态 → 无需重绘（两路竞速都会回调，避免抖动）
+    if (booted && state.meta && stamp && stamp === state.meta.generatedAt && !state.fromCache) return;
+    state.meta = b.meta;
+    if (b.events) state.events = b.events;
+    if (b.eventsMeta) state.eventsMeta = b.eventsMeta;
+    state.fromCache = !!fromCache;
+    if (!booted) {
+      booted = true;
       setupMetaUI();
       initChart();
       bindEvents();
       syncUIFromState();
       switchMetal(state.metal, true);
-      startAutoRefresh(); // 主动更新：定时检查数据新版本，用户无感知刷新各区域
-    }).catch(function () {
-      originalInit(); // bundle 不可用 → 回退原分散请求逻辑（逻辑不变）
-    });
+      startAutoRefresh();
+    } else {
+      setupMetaUI();
+      if (cache[state.metal]) applyMetalData(cache[state.metal]);
+      renderEvents();
+    }
   }
 
-  // 原分散请求初始化（bundle 不可用时的回退路径，逻辑不变）
+  function init() {
+    parseHash();
+    var cached = readBootCache();
+    if (cached) boot(cached, true);          // 秒开：不等网络
+    var take = function (b) {
+      try { boot(b, false); prefetchMetals(); } catch (e) {}
+    };
+    tryBundle().then(take).catch(function () {});
+    loadMinimal(state.metal).then(take).catch(function () {});
+    // 两路全挂才走原分散请求（其内部 loadFirst 现已并行竞速，不会串行拖 4 个源）
+    setTimeout(function () { if (!booted) originalInit(); }, 14000);
+  }
+
+  // 原分散请求初始化（最终兜底路径，逻辑不变，结果统一交给 boot() 渲染）
   function originalInit() {
     Promise.all([
       // 【C32·三端统一】全部改为 GH Pages 镜像优先（与手机网页/小程序同源同字节），平台 /api 兜底
@@ -314,17 +509,10 @@
       loadFirst([canon(CANON + "data/events.meta.json"), "/api/events-meta" + shareQ(), jsd(JSD + "data/events.meta.json"), "data/events.meta.json"]).catch(function () { return null; }),
     ])
       .then(function (res) {
-        state.meta = res[0];
-        state.events = res[1];
-        state.eventsMeta = res[2];
-        setupMetaUI();
-        initChart();
-        bindEvents();
-        syncUIFromState();
-        switchMetal(state.metal, true);
-        startAutoRefresh(); // 主动更新：定时检查数据新版本，用户无感知刷新各区域
+        boot({ meta: res[0], events: res[1], eventsMeta: res[2], metals: {} }, false);
+        prefetchMetals();
       })
-      .catch(function (e) { alert("初始化失败：" + e.message); });
+      .catch(function (e) { if (!booted) alert("初始化失败：" + e.message); });
   }
 
   // 解析 URL Hash 深链：#metal=silver 或 #unit=gram
@@ -1175,8 +1363,13 @@
       var eventsChanged = !!(evMeta && evMeta.updatedAt && (!state.eventsMeta || evMeta.updatedAt !== state.eventsMeta.updatedAt));
       if (priceChanged) {
         state.meta = meta;
-        cache[state.metal] = null; // 丢弃旧缓存，重取新版本
+        // 【2026-11-06 修正】三个金属的缓存一起作废：旧逻辑只清当前品种，
+        // 轮询发现新版本后切到其它品种仍会命中旧数据，与「三端同源同版本」口径矛盾。
+        cache = {};
+        bootData = null;
+        lastWrittenStamp = "";
         state.data = await ensureMetal(state.metal);
+        prefetchMetals();
         corrCache = {};           // 数据源更换，相关性缓存作废
         syncGranAvailability();    // 铜无小时线时禁用「时」选项
         computeAndRenderStats(); // 用新真源锚点 + 现有实时现货重算四卡
