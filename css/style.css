@@ -166,9 +166,8 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 /* 【指标看板统一·改】副行恒为灰色弱提示（对齐小程序 .s 11px/ink-soft），
    不再继承涨跌色；涨跌色只落在主数值 .v，避免「一卡两红」显花 */
 .stat-card .sub { font-size: 11px; margin-top: 4px; font-weight: 500; color: var(--ink-soft); }
-/* 最新价板块自身更新时间（反馈③补齐）：左侧金点强调，与单位行区分 */
-.price-update { display: inline-block; margin-top: 5px; padding-left: 10px; position: relative; font-size: 10px; color: var(--ink-soft); }
-.price-update::before { content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%); width: 5px; height: 5px; border-radius: 50%; background: var(--gold); opacity: .85; }
+/* 价格更新时间：筛选区行末右对齐（到分钟；实时每分 / 真源每15分），与小程序口径一致 */
+.price-update { margin-left: auto; padding-left: 10px; font-size: 11px; color: var(--ink-soft); white-space: nowrap; }
 .v.up { color: var(--up); }
 .v.down { color: var(--down); }
 
@@ -272,9 +271,6 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 .events-filter { display: flex; gap: 6px; flex-wrap: wrap; }
 /* 事件更新时间：提示级（10px 弱色），标题行最右 */
 .ev-update { margin-left: auto; font-size: 10px; color: var(--ink-soft); white-space: nowrap; letter-spacing: .2px; }
-/* 图表卡右下角：唯一的最新价更新时间（秒级；频率分层收进 title 提示） */
-.chart-foot { display: flex; justify-content: flex-end; padding: 2px 4px 0; }
-.chart-update { font-size: 10px; color: var(--ink-soft); letter-spacing: .2px; line-height: 1.4; white-space: nowrap; }
 /* 事件列表容器：始终单列，宽度与上方价格图一致（整页容器内满宽）。
    ——原计划按 EVENT_LIST_REDESIGN §(e) 限 720px 居中提升可读性，但导致事件区与图表不等宽、
    两侧出现留白，已取消（C32 后续）。事件卡片正文为短句，满宽下可读性可接受。 */
