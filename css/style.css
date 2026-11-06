@@ -117,9 +117,15 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 }
 .control-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 /* 单位行：弹性撑满剩余宽度，使价格时间（margin-left:auto）落到整行最右（三端一致：单位行底对齐右对齐） */
-.unit-toggle { flex: 1 1 auto; flex-wrap: nowrap; justify-content: flex-start; }
+.unit-toggle { flex: 1 1 auto; flex-wrap: nowrap; justify-content: flex-start; min-width: 0; }
 /* 单位行芯片压到与小程序同档（11px / 3px 8px），保证「单位 + 价格时间」在 375px 一行不折行 */
 .unit-toggle .chip { font-size: 11px; padding: 3px 8px; }
+/* 【2026-11-06 修复·单位折行】标签与芯片禁止收缩、禁止内部换行。
+   此前 .unit-toggle 为 flex-wrap:nowrap，右侧 194px 的 price-update 是刚性 nowrap，
+   浏览器便反向压缩左侧可收缩项，把「单位」「原始单位」「元/克」挤成竖排两行（375px 实测）。
+   锁定 flex-shrink:0 + white-space:nowrap 后，空间只由 price-update 自己让出（见其 ellipsis 规则）。 */
+.unit-toggle .cg-label,
+.unit-toggle .chip { flex: 0 0 auto; white-space: nowrap; }
 /* 筛选项名称加粗（用户反馈 C09）：粒度/市场/单位三个标签统一 600，
    与 chip 选中态视觉分层，弱化色不变（仍是提示性标签，不是主标题） */
 .cg-label { font-size: 12px; font-weight: 600; color: var(--ink-soft); margin-right: 2px; }
@@ -170,8 +176,14 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 /* 【指标看板统一·改】副行恒为灰色弱提示（对齐小程序 .s 11px/ink-soft），
    不再继承涨跌色；涨跌色只落在主数值 .v，避免「一卡两红」显花 */
 .stat-card .sub { font-size: 11px; margin-top: 4px; font-weight: 500; color: var(--ink-soft); }
-/* 价格更新时间：筛选区行末右对齐（到分钟；实时每分 / 真源每15分），与小程序口径一致 */
-.price-update { margin-left: auto; align-self: flex-end; padding-left: 10px; font-size: 11px; color: var(--ink-soft); white-space: nowrap; }
+/* 价格更新时间：筛选区行末右对齐（到分钟；实时每分 / 真源每15分），与小程序口径一致。
+   【2026-11-06 修复·单位折行】允许时间自身收缩/省略，绝不再反向挤压标签与芯片；
+   极窄屏放不下时尾部省略（完整时间在 title 悬停可见）。 */
+.price-update {
+  margin-left: auto; align-self: flex-end; padding-left: 10px; font-size: 11px;
+  color: var(--ink-soft); white-space: nowrap;
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+}
 .v.up { color: var(--up); }
 .v.down { color: var(--down); }
 

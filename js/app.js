@@ -1118,7 +1118,10 @@
     //   价格更新时间统一在筛选区行末右对齐（到分钟），与小程序口径一致；真源节奏如实标注。
     var pe = document.getElementById("priceUpdate");
     if (pe) {
-      pe.textContent = "更新 " + fmtLocal(p) + " · " + cadence;
+      // 【2026-11-06 修复·单位折行】窄屏单位行空间有限，日期去掉年份（"2026-11-04"→"11-04"），
+      // 省约 30px 让 375px 一行完整显示而不被 ellipsis 截断；完整时间在 title 悬停可见。
+      // 口径与小程序 renderTimes 保持一致，勿单边改。
+      pe.textContent = "更新 " + fmtLocal(p).replace(/^\d{4}-/, "") + " · " + cadence;
       pe.title = "最新价：直连 gold-api.com 实时现货，每 60 秒刷新（" + ps + "）\n" +
         "历史曲线与校验：每 15 分钟由真源发布（" + cs + "）\n" +
         "重大事件：约每 1 小时（" + es + "）\n" +
