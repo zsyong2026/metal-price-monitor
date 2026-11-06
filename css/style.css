@@ -250,6 +250,10 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
   transform: translate(-50%, -50%) rotate(90deg);
   transform-origin: center center;
 }
+/* 【2026-11-06 修复·横屏兜底】旋转兜底下让 #chart 铺满舞台：否则 #chart 仍吃默认 height:460px，
+   旋转 90° 后变成竖向窄条（Y 轴在顶、文字竖排）。改为 flex:1 填满横屏比例舞台，图表即按
+   812×~340 真正宽屏渲染，旋转后与物理横屏对齐。 */
+.chart-wrap.rotate-fallback .ls-stage #chart { flex: 1; width: 100%; height: auto; min-height: 0; }
 /* 退出按钮移到屏幕右下：图例随舞台旋转后落在屏幕右上，两者错开。
    按钮必须与舞台同向旋转 90°（用户反馈 C11：不转的话用户横过手机看图表时，
    按钮文字相对视线是侧躺的；小程序 full-btn 在旋转的 chart-stage 内天然同向，

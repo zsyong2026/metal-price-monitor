@@ -90,7 +90,8 @@
   function fmtAxis(ms) {
     var d = new Date(ms);
     if (state.gran === "hour") return pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + "h";
-    if (state.gran === "day") return pad(d.getMonth() + 1) + "/" + pad(d.getDate());
+    // 【2026-11-06 修复·横轴跨年】可见窗口跨年时日标签补年份，消除 "12/01、02/01" 重复无法区分
+    if (state.gran === "day") return (lsDayWithYear ? d.getFullYear() + "/" : "") + pad(d.getMonth() + 1) + "/" + pad(d.getDate());
     if (state.gran === "month") return d.getFullYear() + "-" + pad(d.getMonth() + 1);
     return "" + d.getFullYear();
   }
@@ -447,6 +448,7 @@
   // 横轴 time 轴标签密度控制（axisLabel.hideOverlap 对 time 轴无效，自行按像素间距过滤）
   var lsXRange = null;        // 当前 dataZoom 窗口 [startMs, endMs]，渲染时写入
   var lsLastShown = -Infinity; // 最近一次显示的标签时间戳，供 formatter 间距判断
+  var lsDayWithYear = false;   // 可见窗口是否跨年：跨年时日标签补年份
   // 【1 分钟实时价·健壮性】快速连点「金属 / 市场 / 单位」会在同一帧内触发多次
   // setOption(notMerge)，ECharts 重建坐标系时偶发 getAxesOnZeroOf / __ec_inner_ 竞态报错，
   // 异常还会冒泡到事件回调，把后面的 computeAndRenderStats() 一起掐断（四卡停在上一个市场）。
@@ -613,7 +615,10 @@
       tooltip: {
         trigger: "axis",
         axisPointer: {
-          type: "cross",
+          // 【2026-11-06 修复·hover】由 "cross" 改为 "line"：cross 的 Y 轴标签显示光标 Y 插值，
+          // 与 tooltip 数据值不一致（如 872.46 vs 901.82）造成读感断裂；line 仅竖线 + tooltip 取真实数据，
+          // 与小程序口径一致。
+          type: "line",
           label: {
             // 默认会把全量时间（2021-01-11 08:00:00）做成 chip 挤在轴标签行里，改简短格式
             formatter: function (p) {
@@ -666,7 +671,20 @@
           color: tc.text, hideOverlap: true, fontSize: axisFs,
           // time 轴的 hideOverlap 不生效：按当前缩放窗口与绘图区宽度算最小标签间距，不足则隐藏
           formatter: function (v, idx) {
-            if (idx === 0) lsLastShown = -Infinity; // 每批标签从锚点重新起算，缩放后自纠错
+            if (idx === 0) {
+              lsLastShown = -Infinity; // 每批标签从锚点重新起算，缩放后自纠错
+              // 可见窗口是否跨年：跨年时把日标签补年份，避免缩放后 "12/01、02/01" 重复
+              var dz0 = chart.getOption().dataZoom;
+              lsDayWithYear = false;
+              if (dz0 && dz0[0] && lsXRange) {
+                var z0 = dz0[0];
+                var st0 = (z0.start != null ? z0.start : 0) / 100;
+                var en0 = (z0.end != null ? z0.end : 100) / 100;
+                var wStart = lsXRange[0] + st0 * (lsXRange[1] - lsXRange[0]);
+                var wEnd = lsXRange[0] + en0 * (lsXRange[1] - lsXRange[0]);
+                lsDayWithYear = new Date(wStart).getFullYear() !== new Date(wEnd).getFullYear();
+              }
+            }
             var dz = chart.getOption().dataZoom;
             if (dz && dz.length && lsXRange) {
               var z = dz[0];
@@ -688,8 +706,14 @@
         { type: "inside", start: zoom[0], end: zoom[1], zoomOnMouseWheel: true, moveOnMouseMove: true },
         {
           type: "slider", start: zoom[0], end: zoom[1], height: sliderH, bottom: sliderB,
-          borderColor: tc.line, fillerColor: "rgba(212,160,23,.15)",
-          handleStyle: { color: "#d4a017" }, textStyle: { color: tc.text, fontSize: 9 },
+          borderColor: tc.line, backgroundColor: "rgba(127,127,127,.06)",
+          fillerColor: "rgba(212,160,23,.20)",
+          handleSize: "130%",
+          handleStyle: { color: "#d4a017", borderColor: "#8a6d12", borderWidth: 2 },
+          moveHandleStyle: { color: "#d4a017" },
+          dataBackground: { lineStyle: { color: "#c3c9d4", width: 1 }, areaStyle: { color: "rgba(195,201,212,.18)" } },
+          selectedDataBackground: { lineStyle: { color: "#d4a017", width: 1 }, areaStyle: { color: "rgba(212,160,23,.14)" } },
+          textStyle: { color: tc.text, fontSize: 9 },
         },
       ],
       animation: false,
