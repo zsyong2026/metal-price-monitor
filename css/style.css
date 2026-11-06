@@ -116,6 +116,8 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
   box-shadow: var(--shadow); margin-bottom: 14px;
 }
 .control-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* 单位行：弹性撑满剩余宽度，使价格时间（margin-left:auto）落到整行最右（三端一致：单位行底对齐右对齐） */
+.unit-toggle { flex: 1 1 auto; justify-content: flex-start; }
 /* 筛选项名称加粗（用户反馈 C09）：粒度/市场/单位三个标签统一 600，
    与 chip 选中态视觉分层，弱化色不变（仍是提示性标签，不是主标题） */
 .cg-label { font-size: 12px; font-weight: 600; color: var(--ink-soft); margin-right: 2px; }
@@ -167,7 +169,7 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
    不再继承涨跌色；涨跌色只落在主数值 .v，避免「一卡两红」显花 */
 .stat-card .sub { font-size: 11px; margin-top: 4px; font-weight: 500; color: var(--ink-soft); }
 /* 价格更新时间：筛选区行末右对齐（到分钟；实时每分 / 真源每15分），与小程序口径一致 */
-.price-update { margin-left: auto; padding-left: 10px; font-size: 11px; color: var(--ink-soft); white-space: nowrap; }
+.price-update { margin-left: auto; align-self: flex-end; padding-left: 10px; font-size: 11px; color: var(--ink-soft); white-space: nowrap; }
 .v.up { color: var(--up); }
 .v.down { color: var(--down); }
 
