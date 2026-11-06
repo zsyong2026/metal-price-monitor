@@ -166,6 +166,9 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 /* 【指标看板统一·改】副行恒为灰色弱提示（对齐小程序 .s 11px/ink-soft），
    不再继承涨跌色；涨跌色只落在主数值 .v，避免「一卡两红」显花 */
 .stat-card .sub { font-size: 11px; margin-top: 4px; font-weight: 500; color: var(--ink-soft); }
+/* 最新价板块自身更新时间（反馈③补齐）：左侧金点强调，与单位行区分 */
+.price-update { display: inline-block; margin-top: 5px; padding-left: 10px; position: relative; font-size: 10px; color: var(--ink-soft); }
+.price-update::before { content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%); width: 5px; height: 5px; border-radius: 50%; background: var(--gold); opacity: .85; }
 .v.up { color: var(--up); }
 .v.down { color: var(--down); }
 

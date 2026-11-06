@@ -487,7 +487,12 @@
 
     // 每个市场：主线（交易时段实线，跨休市断开）+ 虚线连接 series（非交易时段）
     var aggSrc = {};
-    active.forEach(function (m) { aggSrc[m] = aggregate(info.src[m] || [], state.gran); });
+    // 【C48 防御】过滤未来时间戳点（东财当前未走完小时 bar 按收盘打未来时间戳）；
+    //   generate.js 已从源头剔除，此处为端上双保险，避免任何未来点进入折线图。
+    var nowTs = Date.now();
+    active.forEach(function (m) {
+      aggSrc[m] = aggregate((info.src[m] || []).filter(function (p) { return p[0] <= nowTs; }), state.gran);
+    });
     function marketSeries(m, yAxisIndex) {
       var pts = convertPts(aggSrc[m] || [], m, fx);
       var g = splitGaps(pts, state.gran);
@@ -696,7 +701,7 @@
     var spanMs = pts.length > 1 ? (pts[pts.length - 1][0] - pts[0][0]) : 0;
     var spanYears = Math.max(1, Math.round(spanMs / (365 * 86400000) * 10) / 10);
     box.innerHTML =
-      card("最新价（" + MARKET_CN[primary] + "）", fmtNum(latest), "", unitLine) +
+      card("最新价（" + MARKET_CN[primary] + "）", fmtNum(latest), "", unitLine + "<span class='price-update' id='priceUpdate'></span>") +
       card("最新日涨跌", fmtPct(todayPct), cls(todayPct), dayAbs) +
       card("近一年涨跌", fmtPct(yearPct), cls(yearPct), (pts.length - idxYear) + " 个数据点") +
       // 【修复选择器不匹配】history 容器必须与小程序一致为「同一元素 .v.his-range」，
@@ -1041,16 +1046,22 @@
     var p = priceStamp(), c = curveStamp(), e = eventsStamp();
     var hasLive = spotAvailable();
     var ps = fmtLocalSec(p), cs = fmtLocalSec(c), es = fmtLocalSec(e);
-    // 【2026-11-06 UI 精简】时间信息收敛为单处：图表卡右下角的「更新 HH:MM:SS」
-    //   （头部「更新：」与筛选区「最新价…每 60 秒」两处同源重复已移除）。
-    //   频率分层信息收进 title 提示，主视觉只留一个秒级时间，不再出现「写着 60 秒、时间却卡住」。
+    var cadence = hasLive ? "实时每分" : "真源每15分";
+    // 【2026-11-06 反馈③：时间合理设计】原图表卡用「更新 HH:MM:SS · 每 60 秒」到秒展示，
+    //   但历史曲线每 15 分钟才随真源刷新，秒级易误读为实时 → 改为分钟级「数据更新」+ 真源节奏标注。
+    //   最新价板块（priceUpdate）补自身更新时间：实时现货存在时精确到秒（确为每分钟刷新），
+    //   否则按真源 15 分钟节奏标注分钟级，两处口径一致不矛盾。
     var ce = document.getElementById("chartUpdate");
     if (ce) {
-      ce.textContent = "更新 " + ps + (hasLive ? " · 每 60 秒" : " · 真源 15 分钟");
+      ce.textContent = "数据更新 " + fmtLocal(p) + " · " + cadence;
       ce.title = "最新价：直连 gold-api.com 实时现货，每 60 秒刷新（" + ps + "）\n" +
         "历史曲线与校验：每 15 分钟由真源发布（" + cs + "）\n" +
         "重大事件：约每 1 小时（" + es + "）\n" +
         "国内市场：按最近一次真实内外盘比价随国际现货联动（联动价）";
+    }
+    var pe = document.getElementById("priceUpdate");
+    if (pe) {
+      pe.textContent = "更新 " + (hasLive ? ps : fmtLocal(p)) + " · " + cadence;
     }
     var ee = document.getElementById("eventsUpdate");
     if (ee) {

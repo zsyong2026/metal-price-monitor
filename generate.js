@@ -507,7 +507,11 @@ function buildHourlyFromReal(hRealD, D, L, rates) {
   }
   const out = { london: [], domestic: [], hongkong: [] };
   let dropped = 0;
+  const nowMs = Date.now();
   for (const [ms, dv] of hRealD) {
+    // 【C48 未来点防御】东财把"当前未走完的小时 bar"按收盘时刻打了未来时间戳
+    // （如北京 10:11 却出现 10:30 的 bar）。过滤掉未来时间戳，避免折线图出现"未来数据"。
+    if (ms > nowMs) continue;
     const dayMs = ms - (ms % 86400000);
     const dClose = dMap.has(dayMs) ? dMap.get(dayMs) : closeAtOrBefore(dDays, dMap, dayMs);
     const lClose = lMap.has(dayMs) ? lMap.get(dayMs) : closeAtOrBefore(lDays, lMap, dayMs);
