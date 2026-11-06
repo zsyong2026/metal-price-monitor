@@ -21,14 +21,13 @@
         <div class="logo">Au·Ag·Cu</div>
         <div class="titles">
           <h1>金属价格收集</h1>
-          <p class="subtitle">黄金 · 白银 · 铜 ｜ 国内 / 香港 / 伦敦 多市场</p>
         </div>
       </div>
       <div class="header-meta">
         <!-- 徽章初始态为「加载中…」：数据未到位前不预设真假属性（C08 反馈：初始展示「建模数据」误导），
-             加载后由 app.js 按 dataMode 覆写为 真实数据/真实现货/缓存数据 -->
+             加载后由 app.js 按 dataMode 覆写为 真实数据/真实现货/缓存数据。
+             【2026-11-06 UI 精简】头部不再单独显示「更新：」，最新价更新时间收敛到图表卡右下角单处显示。 -->
         <span id="dataModeBadge" class="badge badge-warn" title="数据说明">加载中…</span>
-        <span class="update-time">更新：<b id="lastUpdate">—</b></span>
       </div>
     </header>
 
@@ -61,7 +60,6 @@
         <button class="chip" data-unit="native">原始单位</button>
         <button class="chip active" data-unit="gram">元/克</button>
       </div>
-      <span class="price-update" id="priceUpdate"></span>
     </section>
 
     <section class="stats" id="stats"></section>
@@ -74,6 +72,7 @@
       <button id="landscapeBtn" class="ls-btn" title="横屏放大查看（手机）">⛶ 横屏放大</button>
       <button id="fsBtn" class="fs-btn" title="全屏查看（PC）">⛶ 全屏</button>
       <button id="exitLandscape" class="ls-exit" title="退出全屏">✕ 退出</button>
+      <div class="chart-foot"><span class="chart-update" id="chartUpdate"></span></div>
     </section>
 
     <section class="events">
@@ -141,6 +140,7 @@
     </details>
   </footer>
 
+    <script>window.__STATIC__ = 1;</script>
   <script src="js/vendor/echarts.min.js"></script>
   <script src="js/event-dedupe.js"></script>
   <script src="js/app.js"></script>

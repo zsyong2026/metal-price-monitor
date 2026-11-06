@@ -15,13 +15,15 @@ const DATA = path.resolve(__dirname, "..", "data");
 const GH_PAGES_CANON = "https://zsyong2026.github.io/metal-price-monitor/data";
 
 // 节奏校准：GitHub Actions 的 schedule 虽写每 15 分钟，但低活跃仓库会被排队合并，
-//   实测真实触发间隔约 52~81 分钟。价格阈值取 120 分钟留足余量（避免偶发排队误报）；
-//   事件源本身更新更慢，取 240 分钟。
-//   【2026-11-05】页面「最新价」已改为每 1 分钟直连实时现货（旁路），不影响本巡检：
+//   实测真实触发间隔约 52~81 分钟，偶发空档可达数小时。价格阈值取 120 分钟留足余量（避免偶发排队误报）。
+//   【2026-11-05】页面「最新价」已改为每 60 秒直连实时现货（旁路），不影响本巡检：
 //   这里判的仍是「真源数据是否停更」（三端曲线 / 事件 / 校验），阈值维持小时级，不要因为
-//   看到「1 分钟」就把这里收紧，否则真源正常排队一次就会误报。
+//   看到「60 秒」就把这里收紧，否则真源正常排队一次就会误报。
+//   【2026-11-06 修复误报】事件 stale 判据不再用 updatedAt（= 最近一条事件发生时刻，低频事件长时间无新事件
+//   会被误判「管道停了」），改为「各源最近一次成功抓取是否新鲜」（管道真停 → 所有源 latest 一起变老才告警），
+//   阈值放宽到 12 小时容忍 GitHub 节流空档。
 const PRICE_STALE_MIN = 120;  // 价格真源：实测约 1 小时一轮
-const EVENT_STALE_MIN = 240;  // 事件：事件源本身更新更慢
+const EVENT_SRC_STALE_MIN = 12 * 60;  // 事件：按源抓取新鲜度判（容忍 GitHub 节流空档）
 // 真源读取偶发网络抖动不应直接判异常（它一挂全端受影响，误报代价高）→ 重试确认
 const CANON_RETRY = 2;
 const CANON_RETRY_GAP_MS = 2500;
@@ -111,11 +113,21 @@ function friendlyAge(min) {
   if (!evMeta) {
     problems.push("事件资讯数据暂时读不到（不影响价格数据）。");
   } else {
-    const ageMin = evMeta.updatedAt ? (Date.now() - new Date(evMeta.updatedAt).getTime()) / 60000 : 9999;
-    if (ageMin > EVENT_STALE_MIN) {
-      problems.push("事件资讯已约 " + friendlyAge(ageMin) + "没有更新（事件源本身更新较慢）。新事件可能延迟出现，不影响价格数据。");
+    // 【2026-11-06 修复误报】事件 staleness 改用「各源最近一次成功抓取时刻」(sources[].latest)
+    //   的最新鲜者判断：管道真停 → 所有源 latest 一起变老 → 才告警。
+    //   之前的 updatedAt（最近一条事件发生时刻）在事件低频时空档极大，会被误判「管道停了」。
+    const srcs = evMeta.sources || [];
+    let freshest = null;
+    srcs.forEach(function (s) {
+      if (s.latest && (freshest === null || new Date(s.latest).getTime() > new Date(freshest).getTime())) freshest = s.latest;
+    });
+    if (freshest) {
+      const ageMin = (Date.now() - new Date(freshest).getTime()) / 60000;
+      if (ageMin > EVENT_SRC_STALE_MIN) {
+        problems.push("事件资讯的抓取通道已约 " + friendlyAge(ageMin) + "没有更新（管道可能卡住），新的事件将无法入库（不影响价格数据）。");
+      }
     }
-    const fresh = (evMeta.sources || []).filter((s) => !s.stale).length;
+    const fresh = srcs.filter((s) => !s.stale).length;
     if (!fresh) problems.push("事件资讯的所有来源都暂时停更，新的事件将无法入库（不影响价格数据）。");
   }
 

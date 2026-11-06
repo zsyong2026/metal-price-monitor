@@ -684,8 +684,9 @@
     // 最新价刷新后历史区间一并取极值，避免「最新价高于历史高点」这种自相矛盾
     hi = Math.max(hi, latest); lo = Math.min(lo, latest);
     var unit = useGram() ? "元/克" : d.unit[primary];
-    // 如实标注来源：国内为联动价、伦敦/香港为真实现货；未拿到现货时沿用真源口径不加后缀
-    var unitLine = unit + (liveRaw != null ? (primary === "domestic" ? " · 联动" : " · 实时") : "");
+    // 【2026-11-06 UI 精简】价格卡单位行去掉「· 联动 / · 实时」后缀（与小程序一致），
+    //   联动/实时的数据来源口径已统一在底部说明与图表卡 tooltip 解释，卡片不再重复贴标。
+    var unitLine = unit;
 
     function cls(p) { return p >= 0 ? "up" : "down"; }
     // 【指标看板统一·改】四卡一律「标题 / 主数值 / 副行」三层结构，与小程序完全对齐：
@@ -1040,19 +1041,13 @@
     var p = priceStamp(), c = curveStamp(), e = eventsStamp();
     var hasLive = spotAvailable();
     var ps = fmtLocalSec(p), cs = fmtLocalSec(c), es = fmtLocalSec(e);
-    var el = document.getElementById("lastUpdate");
-    if (el) {
-      el.textContent = ps;
-      el.title = "最新价更新于 " + ps + (hasLive ? "（每 60 秒）" : "（实时价暂不可用，当前为真源 15 分钟版）") + "\n" +
-        "曲线更新于 " + cs + "（每 15 分钟）\n" +
-        "事件更新于 " + es + "（约每 1 小时）";
-    }
-    var pe = document.getElementById("priceUpdate");
-    if (pe) {
-      // 频率分层用准确数字秒：最新价 60 秒 / 曲线 15 分钟 / 事件 1 小时，
-      // 时间精确到秒，手机状态栏与页面可直接核对，不再出现「写着 1 分钟、时间却卡住」。
-      pe.textContent = "最新价 " + ps + (hasLive ? " · 每 60 秒" : " · 真源 15 分钟");
-      pe.title = "最新价：直连 gold-api.com 实时现货，每 60 秒刷新（" + ps + "）\n" +
+    // 【2026-11-06 UI 精简】时间信息收敛为单处：图表卡右下角的「更新 HH:MM:SS」
+    //   （头部「更新：」与筛选区「最新价…每 60 秒」两处同源重复已移除）。
+    //   频率分层信息收进 title 提示，主视觉只留一个秒级时间，不再出现「写着 60 秒、时间却卡住」。
+    var ce = document.getElementById("chartUpdate");
+    if (ce) {
+      ce.textContent = "更新 " + ps + (hasLive ? " · 每 60 秒" : " · 真源 15 分钟");
+      ce.title = "最新价：直连 gold-api.com 实时现货，每 60 秒刷新（" + ps + "）\n" +
         "历史曲线与校验：每 15 分钟由真源发布（" + cs + "）\n" +
         "重大事件：约每 1 小时（" + es + "）\n" +
         "国内市场：按最近一次真实内外盘比价随国际现货联动（联动价）";
@@ -1060,8 +1055,9 @@
     var ee = document.getElementById("eventsUpdate");
     if (ee) {
       if (state.eventsMeta) {
-        ee.textContent = "事件更新于 " + fmtLocal(state.eventsMeta.updatedAt);
-        // 源健康度：停更超过 7 天的源其条目不再入库，tooltip 说明（如 WSJ 两源实测停更 638 天）
+        // 事件时间独立成区（事件数据集自有更新时刻），标签从「事件更新于」精简为「事件」，
+        // 与上方唯一的「更新」时间明确区分，不再三者看起来像同一更新。
+        ee.textContent = "事件 " + fmtLocal(state.eventsMeta.updatedAt);
         var stale = (state.eventsMeta.sources || []).filter(function (s) { return s.stale; });
         ee.title = (stale.length
           ? "以下来源已停更，其旧条目不再入库：" + stale.map(function (s) { return s.name + "（" + Math.round(s.ageDays) + " 天前）"; }).join("、")

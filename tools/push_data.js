@@ -5,7 +5,9 @@
 const fs = require("fs");
 const path = require("path");
 
-const TOKEN = process.env.GH_TOKEN;
+// 优先用显式 GH_TOKEN（本地播种/平台兜底）；在 GitHub Actions 中回退到自动提供的 GITHUB_TOKEN
+// （需 workflow 授予 contents: write 权限，且 main 分支未保护）。
+const TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 const REPO = "metal-price-monitor";
 const OWNER = "zsyong2026";
 const API = "https://api.github.com";

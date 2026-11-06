@@ -269,12 +269,9 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 .events-filter { display: flex; gap: 6px; flex-wrap: wrap; }
 /* 事件更新时间：提示级（10px 弱色），标题行最右 */
 .ev-update { margin-left: auto; font-size: 10px; color: var(--ink-soft); white-space: nowrap; letter-spacing: .2px; }
-/* 价格更新时间：提示级（10px 弱色），跟随筛选区右下角（margin-left:auto 右对齐），
-   不贴统计卡、不独立占行；窄屏折行时仍保持行末右对齐 */
-.price-update {
-  margin-left: auto; font-size: 10px; color: var(--ink-soft);
-  letter-spacing: .2px; line-height: 1.4; white-space: nowrap;
-}
+/* 图表卡右下角：唯一的最新价更新时间（秒级；频率分层收进 title 提示） */
+.chart-foot { display: flex; justify-content: flex-end; padding: 2px 4px 0; }
+.chart-update { font-size: 10px; color: var(--ink-soft); letter-spacing: .2px; line-height: 1.4; white-space: nowrap; }
 /* 事件列表容器：始终单列，宽度与上方价格图一致（整页容器内满宽）。
    ——原计划按 EVENT_LIST_REDESIGN §(e) 限 720px 居中提升可读性，但导致事件区与图表不等宽、
    两侧出现留白，已取消（C32 后续）。事件卡片正文为短句，满宽下可读性可接受。 */
