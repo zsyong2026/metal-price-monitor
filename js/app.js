@@ -461,6 +461,18 @@
        ③ 两路并行取数：整包 bundle 与 4 个小文件最小集竞速，谁先有效谁渲染。
      boot() 幂等：initChart / bindEvents / startAutoRefresh 只执行一次，后续只更新数据。 */
   var booted = false;
+  var chartBooted = false;
+  // ECharts（1MB）改为 async 低优先级加载，可能晚于 app.js 执行；图表等它就绪再初始化。
+  // 有 30s 上限，库彻底不可达时也不会留下无限轮询（数据区照常可用）。
+  function whenEchartsReady(cb) {
+    if (window.echarts && window.echarts.init) { cb(); return; }
+    var tries = 0;
+    var t = setInterval(function () {
+      tries++;
+      if (window.echarts && window.echarts.init) { clearInterval(t); cb(); }
+      else if (tries >= 300) clearInterval(t);
+    }, 100);
+  }
   function boot(b, fromCache) {
     if (!b || !b.meta) return;
     mergeBoot(b);
@@ -474,10 +486,16 @@
     if (!booted) {
       booted = true;
       setupMetaUI();
-      initChart();
       bindEvents();
       syncUIFromState();
+      // 数据区不依赖 ECharts：四卡 / 事件 / 更新时间立即渲染，不等 1MB 图表库
       switchMetal(state.metal, true);
+      whenEchartsReady(function () {
+        if (chartBooted) return;
+        chartBooted = true;
+        initChart();
+        if (state.data) safeRenderChart(true); // 数据还没到就等 applyMetalData 自己重绘
+      });
       startAutoRefresh();
     } else {
       setupMetaUI();
@@ -652,6 +670,9 @@
     });
   }
   function renderChart() {
+    // 【2026-11-06 首屏提速】ECharts 改为低优先级异步加载：它没就绪时不尝试画图，
+    // 四卡 / 事件 / 更新时间等不依赖图表的区域照常先渲染，库到位后再补画一次。
+    if (!chart) return;
     var info = getSeriesSource();
     var d = state.data;
     var fx = fxOf(d);
