@@ -496,6 +496,35 @@
     function marketSeries(m, yAxisIndex) {
       var pts = convertPts(aggSrc[m] || [], m, fx);
       var g = splitGaps(pts, state.gran);
+      // 【2026-11-06 修复：折线图末点 = 60 秒实时现货价】
+      // 日/月/年/时的"当前未结束周期"末点本用批处理聚合值（每小时才更新一次），
+      // 与「最新价」卡（直连 gold-api 60 秒实时）不一致，造成"金价不是最新价 / 今天没结束"的错觉。
+      // 做法：把末点（始终是当前未结束周期）的值替换为实时现货价，并叠加一个菱形"实时(未收盘)"标记，
+      // 折线末端即实时最新价，且随 60 秒链路自动更新；失败（无报价）时静默跳过，绝不劣化。
+      var live = livePricesFor(state.metal, d);
+      if (live && live[m] != null && isFinite(live[m]) && g.main.length) {
+        for (var li = g.main.length - 1; li >= 0; li--) {
+          if (g.main[li] != null) {
+            var liveVal = gram ? convertSpotValue(live[m], m, state.metal, gram, fx) : live[m];
+            g.main[li] = [g.main[li][0], liveVal];
+            var livePt = g.main[li];
+            var liveScatter = {
+              name: MARKET_CN[m] + "·实时",
+              type: "scatter",
+              symbol: "diamond",
+              symbolSize: 11,
+              itemStyle: { color: MARKET_COLOR[m], borderColor: "#fff", borderWidth: 1.5 },
+              z: 12,
+              animation: false,
+              silent: false,
+              data: [livePt],
+            };
+            if (yAxisIndex != null) liveScatter.yAxisIndex = yAxisIndex;
+            series.push(liveScatter);
+            break;
+          }
+        }
+      }
       var s = {
         name: MARKET_CN[m],
         type: "line",
@@ -554,7 +583,17 @@
       gridRight = (active.length - 1) * 60 + 24;
     }
 
-    var zoom = computeZoom((aggSrc[active[0]] || aggSrc.london || []).length);
+    // 【2026-11-06】保留用户当前的 dataZoom（避免 60 秒重绘 / 切金属时把缩放/平移重置回默认窗口）
+    var keepZoom = null;
+    if (chart && chart.getOption) {
+      try {
+        var dz = chart.getOption().dataZoom;
+        if (dz && dz[0] && typeof dz[0].start === "number" && typeof dz[0].end === "number") {
+          keepZoom = [dz[0].start, dz[0].end];
+        }
+      } catch (e) { /* 忽略 */ }
+    }
+    var zoom = keepZoom || computeZoom((aggSrc[active[0]] || aggSrc.london || []).length);
     var MARKET_BY_CN = { "伦敦": "london", "国内": "domestic", "香港": "hongkong" };
     var gridBottom = narrow ? 80 : 64;      // 小屏留足横轴标签 + 缩放条空间
     var sliderH = narrow ? 22 : 26;
@@ -596,10 +635,13 @@
           var head = fmtDate(vis[0].value[0], state.gran);
           var html = "<div style='font-weight:600;margin-bottom:4px'>" + head + "</div>";
           vis.forEach(function (p) {
-            var mk = MARKET_BY_CN[p.seriesName];
+            var baseName = p.seriesName.replace(/·.*$/, "");
+            var mk = MARKET_BY_CN[baseName];
+            var isLive = p.seriesName.indexOf("·实时") >= 0;
+            var label = isLive ? (baseName + " · 实时(未收盘)") : p.seriesName;
             var u = gram ? "元/克" : ((d.unit && d.unit[mk]) || "");
             html += "<div style='display:flex;justify-content:space-between;gap:14px'>" +
-              "<span>" + p.marker + p.seriesName + "</span>" +
+              "<span>" + p.marker + label + "</span>" +
               "<b>" + fmtNum(p.value[1]) + (u ? " " + u : "") + "</b></div>";
           });
           return html;
@@ -1018,6 +1060,7 @@
         if (state.data) {
           computeAndRenderStats(); // 四卡一起重算，避免「最新价变了但涨跌没变」
           renderUpdateTimes();    // 顶部 / 筛选区时间同步
+          if (chart) safeRenderChart(); // 折线图实时末点（菱形标记）随 60 秒现货刷新；保留用户 dataZoom
         }
       }
     } catch (e) { /* 静默保留上一轮：不回退、不闪烁 */ }
