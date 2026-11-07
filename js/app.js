@@ -488,15 +488,81 @@
      boot() 幂等：initChart / bindEvents / startAutoRefresh 只执行一次，后续只更新数据。 */
   var booted = false;
   var chartBooted = false;
-  // ECharts（1MB）改为 async 低优先级加载，可能晚于 app.js 执行；图表等它就绪再初始化。
-  // 有 30s 上限，库彻底不可达时也不会留下无限轮询（数据区照常可用）。
+  // ---------- ECharts 多源动态加载（【2026-11-08】）----------
+  // 1MB 的 ECharts 若从 github.io 本域加载，国内常限速/阻断（实测 25s 仅下 452KB）→ 图表长期空白。
+  // 改为多源竞速：jsDelivr(主) → cdnjs(备) → 本地 vendor(兜)，首个定义 window.echarts 者生效；
+  // 全失败才给「加载失败·重试」UI（绝不静默空白）。
+  var ECHARTS_SRCS = [
+    "https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js",
+    "https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js",
+    "js/vendor/echarts.min.js"
+  ];
+  var echartsLoadStarted = false, echartsFailed = false, pendingEchartsCb = null;
+  function bootChartNow() {
+    if (chartBooted) return;
+    chartBooted = true;
+    initChart();
+    if (state.data) safeRenderChart(true);
+  }
+  function fireEchartsReady() {
+    if (pendingEchartsCb) { var c = pendingEchartsCb; pendingEchartsCb = null; c(); }
+  }
+  function onEchartsFail() {
+    if (echartsFailed) return;
+    echartsFailed = true;
+    var el = document.getElementById("chartLoading");
+    if (!el) return;
+    el.style.display = "flex";
+    el.innerHTML = "<div class='cl-fail'><div>图表组件加载失败（网络受限）</div><button type='button' id='clRetry' class='cl-btn'>点击重试</button></div>";
+    var btn = document.getElementById("clRetry");
+    if (btn) btn.onclick = function () {
+      echartsLoadStarted = false; echartsFailed = false;
+      el.style.display = "flex"; el.innerHTML = "数据加载中…";
+      if (window.echarts) { bootChartNow(); return; }
+      pendingEchartsCb = bootChartNow;
+      ensureEcharts();
+    };
+  }
+  function ensureEcharts() {
+    if (window.echarts || echartsLoadStarted) { if (window.echarts) fireEchartsReady(); return; }
+    echartsLoadStarted = true;
+    var i = 0;
+    function tryNext() {
+      if (window.echarts) { fireEchartsReady(); return; }
+      if (i >= ECHARTS_SRCS.length) { onEchartsFail(); return; }
+      var isLast = (i === ECHARTS_SRCS.length - 1);
+      var src = ECHARTS_SRCS[i++];
+      var s = document.createElement("script");
+      s.src = src; s.async = true;
+      var done = false;
+      // 非末源（CDN）给 9s 切换；末源（本地 vendor）给 45s，避免 github.io 国内慢时被误判失败
+      var budget = isLast ? 45000 : 9000;
+      var to = setTimeout(function () {
+        if (done) return; done = true;
+        if (isLast) onEchartsFail(); else tryNext();
+      }, budget);
+      function settle(ok) {
+        if (done) return; done = true; clearTimeout(to);
+        if (ok && window.echarts) { fireEchartsReady(); return; }
+        if (isLast) onEchartsFail(); else tryNext();
+      }
+      s.onload = function () { settle(true); };
+      s.onerror = function () { settle(false); };
+      document.head.appendChild(s);
+    }
+    tryNext();
+  }
+  // ECharts（1MB）多源动态加载（见 ensureEcharts），可能晚于 app.js 执行；图表等它就绪再初始化。
+  // 有 60s 轮询上限兜底；库彻底不可达时由 onEchartsFail 给重试 UI（数据区照常可用）。
   function whenEchartsReady(cb) {
+    ensureEcharts();
     if (window.echarts && window.echarts.init) { cb(); return; }
+    pendingEchartsCb = cb;
     var tries = 0;
     var t = setInterval(function () {
       tries++;
-      if (window.echarts && window.echarts.init) { clearInterval(t); cb(); }
-      else if (tries >= 300) clearInterval(t);
+      if (window.echarts && window.echarts.init) { clearInterval(t); pendingEchartsCb = null; cb(); }
+      else if (tries >= 600) clearInterval(t);
     }, 100);
   }
   function boot(b, fromCache) {
@@ -516,12 +582,7 @@
       syncUIFromState();
       // 数据区不依赖 ECharts：四卡 / 事件 / 更新时间立即渲染，不等 1MB 图表库
       switchMetal(state.metal, true);
-      whenEchartsReady(function () {
-        if (chartBooted) return;
-        chartBooted = true;
-        initChart();
-        if (state.data) safeRenderChart(true); // 数据还没到就等 applyMetalData 自己重绘
-      });
+      whenEchartsReady(bootChartNow);
       startAutoRefresh();
     } else {
       setupMetaUI();
@@ -750,6 +811,18 @@
     active.forEach(function (m) {
       aggSrc[m] = aggregate((info.src[m] || []).filter(function (p) { return p[0] <= nowTs; }), state.gran);
     });
+    // 【2026-11-08 修复·未来空白轴】显式锁定时间轴范围 = 过滤后真实数据首尾（跨激活市场取最值），
+    // 不再让 ECharts 自动 nice 延伸到 2027（实测竖屏 2027-01-01、横屏 2027-10-01 空白）。
+    // 右侧命中空间由 grid.right 兜底，故 boundaryGap 两侧归零（见下方 xAxis）。
+    var axisMin = Infinity, axisMax = -Infinity;
+    active.forEach(function (m) {
+      var a = aggSrc[m] || [];
+      if (a.length) {
+        if (a[0][0] < axisMin) axisMin = a[0][0];
+        if (a[a.length - 1][0] > axisMax) axisMax = a[a.length - 1][0];
+      }
+    });
+    if (!isFinite(axisMin)) { axisMin = null; axisMax = null; }
     function marketSeries(m, yAxisIndex) {
       var pts = convertPts(aggSrc[m] || [], m, fx);
       var g = splitGaps(pts, state.gran);
@@ -940,10 +1013,11 @@
       },
       xAxis: {
         type: "time",
-        // 【2026-11-07 修复】右侧留 6% 空白：time 轴末点原本正好压在绘图区最右边界，
-        // 最新价那个点/最右时间刻度贴死边缘，点击命中区几乎为零。留白后末点内移，
-        // 与 grid.right 的双重留白一起把「最新一点」推进可点区域（小程序同口径）。
-        boundaryGap: ["0%", "6%"],
+        // 【2026-11-08 修复·末点不再延伸到未来】显式锁定到真实数据范围（axisMin/axisMax 见上方），
+        // boundaryGap 两侧归零，右侧命中空间由 grid.right 提供；末点不再压边、也不被 nice 到 2027。
+        boundaryGap: ["0%", "0%"],
+        min: axisMin,
+        max: axisMax,
         splitNumber: maxXLabels,
         axisLabel: {
           color: tc.text, hideOverlap: true, fontSize: axisFs,
@@ -998,24 +1072,19 @@
     };
     // 记录全量数据跨度，供横轴标签间距过滤换算缩放窗口使用
     var pts0 = aggSrc[active[0]] || aggSrc.london || [];
-    if (pts0.length >= 2) lsXRange = [pts0[0][0], pts0[pts0.length - 1][0]];
-    // 【2026-11-07 修复·「数据跟不上」的误解】曲线末点为「已收盘周期」时如实说明：
-    // 周末/夜间/节假日没有新交易时段，日线停在最近收盘日、小时线停在最近收盘小时是正确语义
-    // （如周六看到周五 11-06 日K、北京 11-07 02:00 小时K），并非数据断更。
-    // 真源 15 分钟与最新价 60 秒两条链路都在正常跑（与小程序 sessionNote 同一口径）。
-    var noteEl = document.getElementById("sessionNote");
+    if (axisMin != null) lsXRange = [axisMin, axisMax];
+    // 【2026-11-08 修复·说明整合统一】与小程序 chartCaption 同文案、同口径（三端统一）：
+    // 常驻交易时段/虚线/缩放/60秒/15分钟（国内联动价）；休市时前置一句「非交易时段…数据未停更」。
+    var noteEl = document.getElementById("chartCaption");
     if (noteEl) {
       var lastTs0 = pts0.length ? pts0[pts0.length - 1][0] : 0;
       var sessionClosed = lastTs0 > 0 && !isLivePeriod(lastTs0, state.gran, nowTs);
-      if (sessionClosed) {
-        var sessionAt = fmtDate(lastTs0, state.gran).replace(/^\d{4}-/, "");
-        noteEl.textContent = "当前为非交易时段（周末 / 夜间 / 节假日），曲线截至 " + sessionAt
-          + " 收盘；真源每 15 分钟仍在生成、最新价每 60 秒仍在刷新，数据未停更。";
-        noteEl.hidden = false;
-      } else {
-        noteEl.textContent = "";
-        noteEl.hidden = true;
-      }
+      var sessionAt = lastTs0 ? fmtDate(lastTs0, state.gran).replace(/^\d{4}-/, "") : "";
+      var MECH = "交易时段为实线，非交易时段（夜间 / 周末 / 节假日）以虚线连接；可缩放拖动查看。最新价每 60 秒刷新，历史曲线每 15 分钟更新（国内为联动价）。";
+      noteEl.textContent = sessionClosed
+        ? "当前为非交易时段，曲线截至 " + sessionAt + " 收盘，数据未停更（真源每 15 分钟、最新价每 60 秒仍在更新）。" + MECH
+        : MECH;
+      noteEl.hidden = false;
     }
     chart.setOption(option, true);
     document.getElementById("chartLoading").style.display = "none";
