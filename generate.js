@@ -528,17 +528,59 @@ function buildHourlyFromReal(hRealD, D, L, rates) {
   return out.london.length >= 20 ? out : null;
 }
 
-// 真实模式：把伦敦序列最后一根更新为实时现货（休市则追加"今"点，按 UTC 当日零点幂等）
-function spliceSpotLast(arr, target) {
+/* ---------- 【2026-11-07】未来日期点治理 + 已收盘周期保护 ----------
+   实测线上 gold.json 的 series.domestic 末端出现 2026-11-09（周六看到下周一）预置日K；
+   同时休市期间用 gold-api 现货覆盖「上一交易日已收盘日K」，会让最近收盘价失真，
+   并与端上 isLivePeriod「已收盘周期不覆盖、不标未收盘」的口径互相矛盾。
+   下面纯函数与小程序 utils/chart-core.js、网页 js/app.js 的 isLivePeriod 同一口径，
+   且全部导出供自测直接调用（本文件 require 时有 require.main 保护，不会产生副作用）。 */
+
+// 按北京日历判断 lastTs 是否属于「当前尚未结束的周期」（gran: day | hour）
+function isOpenPeriod(lastTs, gran, nowMs) {
+  if (!isFinite(lastTs) || lastTs <= 0) return false;
+  const now = nowMs || Date.now();
+  if (lastTs > now) return false;
+  const a = new Date(lastTs + 8 * 3600000);
+  const b = new Date(now + 8 * 3600000);
+  const sameDay = a.getUTCFullYear() === b.getUTCFullYear()
+               && a.getUTCMonth() === b.getUTCMonth()
+               && a.getUTCDate() === b.getUTCDate();
+  if (gran === "hour") return sameDay && a.getUTCHours() === b.getUTCHours();
+  return sameDay;
+}
+
+// 周末休市（节假日没有日历数据，由源端是否返回日K决定，绝不主动造点）
+function isTradingDayUtc(ms) {
+  const w = new Date(ms).getUTCDay();
+  return w !== 0 && w !== 6;
+}
+
+// 出口清洗：剔除所有未来时间戳点。日线为 UTC 当日零点、小时线为 UTC 整点，
+// 二者在当前时刻均 <= now，故严格 `> now` 判定安全，不会误删当前 bar。
+function stripFuturePts(arr, nowMs) {
+  if (!Array.isArray(arr)) return arr;
+  const now = nowMs || Date.now();
+  return arr.filter((p) => p && isFinite(p[0]) && p[0] <= now);
+}
+
+// 是否允许把「最后一根日K」替换为实时现货：必须是今天的日K + 今天是交易日 + 当前日周期未结束。
+function shouldSpliceSpot(arr, nowMs) {
+  if (!arr || !arr.length) return false;
+  const now = nowMs || Date.now();
+  const last = arr[arr.length - 1][0];
+  const todayUtc = Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth(), new Date(now).getUTCDate());
+  return last === todayUtc && isTradingDayUtc(todayUtc) && isOpenPeriod(last, "day", now);
+}
+
+// 真实模式：把伦敦序列最后一根更新为实时现货。
+// 【2026-11-07 加固】旧逻辑在休市时会把周五收盘价覆盖成周末现货价，或在长假后
+// push 一根「今天」的非交易日虚假日K；现在只在 shouldSpliceSpot 为真时覆盖，
+// 已收盘周期一律保持真实收盘价（与端上 isLivePeriod 一致）。
+function spliceSpotLast(arr, target, nowMs) {
   if (!arr || !arr.length || target == null) return arr;
+  if (!shouldSpliceSpot(arr, nowMs)) return arr;
   const out = arr.slice();
-  const last = out[out.length - 1];
-  const todayUtc = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
-  if (todayUtc - last[0] <= 86400000) {
-    out[out.length - 1] = [last[0], round2(target)];
-  } else {
-    out.push([todayUtc, round2(target)]);
-  }
+  out[out.length - 1] = [out[out.length - 1][0], round2(target)];
   return out;
 }
 
@@ -587,6 +629,7 @@ const JUMP_MAX = { gold: 0.25, silver: 0.45, copper: 0.25 };
 function validateSeries(metal, L, D, H, prevLast, spot, cross) {
   const bad = (reason) => ({ ok: false, reason });
   const day = (t) => new Date(t).toISOString().slice(0, 10);
+  const nowMs = Date.now();
   const jumpMax = JUMP_MAX[metal] || 0.25;
   // 末端陈旧阈值：伦敦/香港来自新浪(实时可达) 要求 ≤12 天；国内回退到「上一版真实值」时允许 ≤30 天
   // （真实但可能滞后，远优于 6% 偏高的反推值）
@@ -598,6 +641,9 @@ function validateSeries(metal, L, D, H, prevLast, spot, cross) {
     for (let i = 0; i < s.length; i++) {
       const p = s[i];
       if (!p || !(p[0] > prevT)) return bad(name + "时间戳非递增@" + i);
+      // 【2026-11-07】未来日期点一律拒绝发布：源端周末会预置「下周一」日K，
+      // 出口已 stripFuturePts 清洗，此处是最后一道门，防任何漏网数据入库。
+      if (p[0] > nowMs) return bad(name + "含未来日期点 " + day(p[0]));
       if (!(p[1] > rg[0] && p[1] < rg[1])) return bad(name + "数值越界 " + p[1] + "@" + day(p[0]));
       if (prevV != null && Math.abs(p[1] / prevV - 1) > jumpMax) {
         return bad(name + "单日跳变 " + ((p[1] / prevV - 1) * 100).toFixed(1) + "%@" + day(p[0]));
@@ -605,7 +651,7 @@ function validateSeries(metal, L, D, H, prevLast, spot, cross) {
       if (i > 0 && p[0] - prevT > 12 * 86400000) return bad(name + "存在大段缺失@" + day(p[0]));
       prevT = p[0]; prevV = p[1];
     }
-    if (Date.now() - s[s.length - 1][0] > STALE_DAYS[name] * 86400000) return bad(name + "末端数据陈旧（" + day(s[s.length - 1][0]) + "）");
+    if (nowMs - s[s.length - 1][0] > STALE_DAYS[name] * 86400000) return bad(name + "末端数据陈旧（" + day(s[s.length - 1][0]) + "）");
   }
   // 交叉校验：伦敦日线末端 vs gold-api 真实现货（同一市场，应基本一致）
   if (spot) {
@@ -628,6 +674,7 @@ const HOURLY_JUMP_MAX = { gold: 0.12, silver: 0.25, copper: 0.12 };
 function validateHourly(metal, hL, hD, hH) {
   const bad = (reason) => ({ ok: false, reason });
   const jumpMax = HOURLY_JUMP_MAX[metal] || 0.12;
+  const nowMs = Date.now();
   for (const [name, s] of [["伦敦", hL], ["国内", hD], ["香港", hH]]) {
     if (!s || s.length < 20) return bad(name + "小时线条数不足（" + (s ? s.length : 0) + "）");
     const rg = RANGE[metal][name === "伦敦" ? "london" : name === "国内" ? "domestic" : "hongkong"];
@@ -635,6 +682,8 @@ function validateHourly(metal, hL, hD, hH) {
     for (let i = 0; i < s.length; i++) {
       const p = s[i];
       if (!p || !(p[0] > prevT)) return bad(name + "小时线时间戳非递增@" + i);
+      // 【2026-11-07】与日线同口径：当前未走完的小时 bar 被打未来时间戳时不得入库
+      if (p[0] > nowMs) return bad(name + "小时线含未来时间戳 @" + new Date(p[0]).toISOString().slice(0, 16));
       if (!(p[1] > rg[0] && p[1] < rg[1])) return bad(name + "小时线数值越界 " + p[1] + "@" + new Date(p[0]).toISOString().slice(0, 16));
       if (prevV != null && Math.abs(p[1] / prevV - 1) > jumpMax) {
         return bad(name + "小时线单步跳变 " + ((p[1] / prevV - 1) * 100).toFixed(1) + "%@" + new Date(p[0]).toISOString().slice(0, 16));
@@ -813,8 +862,11 @@ async function generateAll(preSpot) {
       lReal = metal === "copper" ? s.price * LB2KG : s.price; // HG 美元/磅 -> 美元/吨
       hReal = lReal * usdhkd;
       if (dataMode === "real") {
-        L = spliceSpotLast(L, lReal);
-        if (H.length) H[H.length - 1] = [H[H.length - 1][0], round2(hReal)];
+        const nowMs0 = Date.now();
+        const dayOpen = shouldSpliceSpot(L, nowMs0);
+        L = spliceSpotLast(L, lReal, nowMs0);
+        // 香港末点由伦敦折算，必须与伦敦同一判定：休市时保持已收盘价，不被周末现货覆盖
+        if (dayOpen && H.length) H[H.length - 1] = [H[H.length - 1][0], round2(hReal)];
       } else {
         dReal = metal === "copper"
           ? lReal * fxr.usdcny * 1.13 + 500
@@ -858,12 +910,29 @@ async function generateAll(preSpot) {
       hL = hr.london; hD = hr.domestic; hH = hr.hongkong;
     }
     // 小时线末端与现货对齐（伦敦=实时现货；国内保持真实收盘，不用反推值）
-    if (lReal != null && hL.length) {
+    // 【2026-11-07】只有最后一根 bar 属于「当前尚未结束的小时」才覆盖；休市时最后一根是
+    // 上一交易时段的已收盘 bar（如周六看到北京 11-07 02:00），保持真实收盘价，
+    // 与端上 isLivePeriod「已收盘周期不覆盖」同一口径，避免小时线末点显示休市现货价。
+    if (lReal != null && hL.length && isOpenPeriod(hL[hL.length - 1][0], "hour", Date.now())) {
       hL[hL.length - 1][1] = round2(lReal);
       if (hH.length) hH[hH.length - 1][1] = round2(hReal);
       if (dataMode !== "real" && hD.length) hD[hD.length - 1][1] = round2(dReal);
     }
-    // 5) 校验：通过才清洗入库并发布；不通过则保留上一版已发布数据（不覆盖）
+    // 5) 出口清洗：剔除未来日期点（源端周末可能返回「下一交易日」预置日K，实测 11-09）。
+    //    必须在校验之前清洗——否则一条未来点就会让整轮被拒、数据冻结在旧版（端上虽有过滤，
+    //    但真源本身不该发布尚未到来的交易日）。日线/小时线六个序列统一过这一道。
+    const nowMs = Date.now();
+    const beforeCounts = [L.length, D.length, H.length, (hL || []).length, (hD || []).length, (hH || []).length];
+    L = stripFuturePts(L, nowMs); D = stripFuturePts(D, nowMs); H = stripFuturePts(H, nowMs);
+    hL = stripFuturePts(hL || [], nowMs); hD = stripFuturePts(hD || [], nowMs); hH = stripFuturePts(hH || [], nowMs);
+    const droppedFuture = [L.length, D.length, H.length, hL.length, hD.length, hH.length]
+      .reduce((n, v, i) => n + (beforeCounts[i] - v), 0);
+    if (droppedFuture) {
+      health.futureDropped = health.futureDropped || {};
+      health.futureDropped[metal] = droppedFuture;
+      console.warn(`[${metal}] 清洗未来日期点 ${droppedFuture} 个（源端预置了尚未到来的交易日）`);
+    }
+    // 6) 校验：通过才清洗入库并发布；不通过则保留上一版已发布数据（不覆盖）
     let prevLast = null;
     let prevHourly = null;
     try {
@@ -2785,5 +2854,11 @@ function validateEvents(res) {
   return errs;
 }
 
-module.exports = { generateAll, fetchSpotAll, buildEvents, zhGist, zhSummary, zhTitle, zhTags, normalizeTags, zhFact: NF.zhFact, splitCrossMetalEvents };
+module.exports = {
+  generateAll, fetchSpotAll, buildEvents, zhGist, zhSummary, zhTitle, zhTags,
+  normalizeTags, zhFact: NF.zhFact, splitCrossMetalEvents,
+  // 【2026-11-07】导出供自测直接调用（真实函数行为验证，非正则猜测）
+  isOpenPeriod, isTradingDayUtc, stripFuturePts, shouldSpliceSpot, spliceSpotLast,
+  validateSeries, validateHourly,
+};
 if (require.main === module) generateAll().then((r) => console.log("done", r)).catch((e) => { console.error(e); process.exit(1); });

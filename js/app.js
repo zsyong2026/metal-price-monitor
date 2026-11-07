@@ -40,6 +40,32 @@
   var SPOT_REFRESH_MS = 60 * 1000;    // 最新价：1 分钟
   var SPOT_MIN_GAP_MS = 20 * 1000;    // 页面回前台时允许立即重抓的最小间隔
   var spotState = { quotes: {}, lastOkAt: 0, fetching: false };
+  /* ---------- 【2026-11-07 修复·频率文案闪烁】与小程序 pages/index/index.js 同一口径 ----------
+     旧逻辑是二态：有现货 →「实时每分」，没现货 →「真源每15分」。冷启动首帧现货必然还没回来，
+     于是先显示「真源每15分」，1~2 秒后现货到位又跳成「实时每分」（用户反馈「会跳一下」）。
+     改为四态状态机：
+       · settled    = 本会话现货链路是否已定论（成功 / 明确不可用）
+       · wasOk      = 本会话结论；lastOk = 上次会话结论（localStorage 持久化）
+       · failStreak = 连续失败轮次，单轮抖动不立刻改口（连续 2 轮才降级）
+     未定论时沿用上次结论，或显示中性的「校验最新价…」，绝不先落误导性的「真源每15分」。 */
+  var spotCadence = { settled: false, wasOk: null, lastOk: false, failStreak: 0 };
+  try { spotCadence.lastOk = localStorage.getItem("mm.spot.ok") === "1"; } catch (e) { /* 隐私模式 */ }
+  function spotSucceed() {
+    spotCadence.settled = true;
+    spotCadence.wasOk = true;
+    spotCadence.failStreak = 0;
+    try { localStorage.setItem("mm.spot.ok", "1"); } catch (e) { /* 忽略 */ }
+  }
+  function spotFailed() {
+    spotCadence.failStreak++;
+    // 云函数/网络冷启动单轮抖动不改口；连续 2 轮才如实降级
+    if (spotCadence.failStreak >= 2 && spotCadence.wasOk !== false) {
+      spotCadence.settled = true;
+      spotCadence.wasOk = false;
+      try { localStorage.setItem("mm.spot.ok", "0"); } catch (e) { /* 忽略 */ }
+      if (state.data) renderUpdateTimes();
+    }
+  }
 
   /* ---------- 工具 ---------- */
   function fmtNum(v) {
@@ -635,6 +661,26 @@
     return { main: main, dash: dash };
   }
 
+  // 【2026-11-07 修复·未收盘误标】与小程序 utils/chart-core.js 完全同一口径，勿单边改。
+  // 只有折线末点属于「当前尚未结束的周期」时，才允许用 60 秒实时现货覆盖末点并标注「实时(未收盘)」。
+  // 周末/夜间/收盘后，末点是上一交易日的**已收盘**日K，标「未收盘」自相矛盾，
+  // 更不能拿休市期间的现货价去覆盖已收盘价（用户反馈「日线更新到 6 号，还显示未收盘价」）。
+  // 时间戳口径：日线为 UTC 当日零点、小时线为 UTC 整点，统一按北京日历比较。
+  function isLivePeriod(lastTs, gran, nowTs) {
+    if (!isFinite(lastTs) || lastTs <= 0) return false;
+    var now = nowTs || Date.now();
+    if (lastTs > now) return false;               // 未来点一律不标
+    var a = new Date(lastTs + 8 * 3600000);
+    var b = new Date(now + 8 * 3600000);
+    var sameDay = a.getUTCFullYear() === b.getUTCFullYear()
+               && a.getUTCMonth() === b.getUTCMonth()
+               && a.getUTCDate() === b.getUTCDate();
+    if (gran === "hour") return sameDay && a.getUTCHours() === b.getUTCHours();
+    if (gran === "month") return a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth();
+    if (gran === "year") return a.getUTCFullYear() === b.getUTCFullYear();
+    return sameDay;
+  }
+
   function computeZoom(len) {
     var win;
     if (state.gran === "hour") win = 72;          // 显示近 72 个小时点
@@ -708,12 +754,21 @@
       var pts = convertPts(aggSrc[m] || [], m, fx);
       var g = splitGaps(pts, state.gran);
       // 【2026-11-06 修复：折线图末点 = 60 秒实时现货价】
-      // 日/月/年/时的"当前未结束周期"末点本用批处理聚合值（每小时才更新一次），
-      // 与「最新价」卡（直连 gold-api 60 秒实时）不一致，造成"金价不是最新价 / 今天没结束"的错觉。
-      // 做法：把末点（始终是当前未结束周期）的值替换为实时现货价，并叠加一个菱形"实时(未收盘)"标记，
-      // 折线末端即实时最新价，且随 60 秒链路自动更新；失败（无报价）时静默跳过，绝不劣化。
+      // 日/月/年/时的"当前未结束周期"末点本用批处理聚合值，与「最新价」卡（直连 gold-api 60 秒实时）
+      // 不一致，造成"金价不是最新价 / 今天没结束"的错觉。把末点的值替换为实时现货价，
+      // 并叠加一个菱形"实时(未收盘)"标记，随 60 秒链路自动更新；失败（无报价）时静默跳过。
+      // 【2026-11-07 加固】上述前提「末点始终是当前未结束周期」在周末 / 夜间 / 节假日不成立：
+      // 此时末点是上一交易日的**已收盘**日K，标「实时(未收盘)」自相矛盾，且会拿休市期间的
+      // 现货价去覆盖已收盘价。故只有 isLivePeriod 判定为「当前尚未结束的周期」时才覆盖 + 标记；
+      // 已收盘周期保持真源收盘价、不叠加菱形实时点。休市原因由图表卡的「非交易时段」说明解释，
+      // 不让用户误以为数据停更（与小程序 utils/chart-core.js 同一口径）。
       var live = livePricesFor(state.metal, d);
-      if (live && live[m] != null && isFinite(live[m]) && g.main.length) {
+      var lastTs = null;
+      for (var ti = g.main.length - 1; ti >= 0; ti--) {
+        if (g.main[ti] != null) { lastTs = g.main[ti][0]; break; }
+      }
+      var periodOpen = isLivePeriod(lastTs, state.gran, nowTs);
+      if (periodOpen && live && live[m] != null && isFinite(live[m]) && g.main.length) {
         for (var li = g.main.length - 1; li >= 0; li--) {
           if (g.main[li] != null) {
             var liveVal = gram ? convertSpotValue(live[m], m, state.metal, gram, fx) : live[m];
@@ -776,7 +831,10 @@
         axisLabel: { color: tc.text, formatter: function (v) { return fmtNum(v); } },
         splitLine: { lineStyle: { color: tc.line, type: "dashed" } },
       };
-      gridRight = 18;
+      // 【2026-11-07 修复·末点贴边难 hover】右侧留白由 18 → 26：最新一点原本几乎压在
+      // 图表/屏幕右边缘，手指或鼠标一靠近边缘就点不中，tooltip 也容易溢出被裁。
+      // 与下方 xAxis.boundaryGap 右侧 6% 一起把末点推进可点区域（小程序同口径）。
+      gridRight = 26;
     } else {
       // 原始单位视图：每个市场一条独立 Y 轴，避免「美元/盎司 vs 元/克 vs 港元/盎司」量纲差异把曲线压平
       active.forEach(function (m, i) { marketSeries(m, i); });
@@ -791,7 +849,8 @@
           splitLine: { show: i === 0, lineStyle: { color: tc.line, type: "dashed" } },
         };
       });
-      gridRight = (active.length - 1) * 60 + 24;
+      // 多 Y 轴占位之外再留 36px 命中空间（原 24px 偏窄，靠右边缘点不中）
+      gridRight = (active.length - 1) * 60 + 36;
     }
 
     // 【2026-11-06】保留用户当前的 dataZoom（避免 60 秒重绘 / 切金属时把缩放/平移重置回默认窗口）
@@ -823,11 +882,17 @@
       grid: { left: 8, right: gridRight, top: gridTop, bottom: gridBottom, containLabel: true },
       tooltip: {
         trigger: "axis",
+        // 【2026-11-07 修复·hover 难点】点击/触摸也触发（不只 mousemove，移动端更友好）；
+        // confine 把浮层限制在画布内，避免靠右边缘时 tooltip 溢出屏幕被裁掉看不见。
+        triggerOn: "mousemove|click",
+        confine: true,
         axisPointer: {
           // 【2026-11-06 修复·hover】由 "cross" 改为 "line"：cross 的 Y 轴标签显示光标 Y 插值，
           // 与 tooltip 数据值不一致（如 872.46 vs 901.82）造成读感断裂；line 仅竖线 + tooltip 取真实数据，
           // 与小程序口径一致。
           type: "line",
+          snap: true,   // 吸附最近数据点：不用精确戳中细线，靠近即出值
+          lineStyle: { color: "#c3c9d4" },
           label: {
             // 默认会把全量时间（2021-01-11 08:00:00）做成 chip 挤在轴标签行里，改简短格式
             formatter: function (p) {
@@ -875,6 +940,10 @@
       },
       xAxis: {
         type: "time",
+        // 【2026-11-07 修复】右侧留 6% 空白：time 轴末点原本正好压在绘图区最右边界，
+        // 最新价那个点/最右时间刻度贴死边缘，点击命中区几乎为零。留白后末点内移，
+        // 与 grid.right 的双重留白一起把「最新一点」推进可点区域（小程序同口径）。
+        boundaryGap: ["0%", "6%"],
         splitNumber: maxXLabels,
         axisLabel: {
           color: tc.text, hideOverlap: true, fontSize: axisFs,
@@ -930,6 +999,24 @@
     // 记录全量数据跨度，供横轴标签间距过滤换算缩放窗口使用
     var pts0 = aggSrc[active[0]] || aggSrc.london || [];
     if (pts0.length >= 2) lsXRange = [pts0[0][0], pts0[pts0.length - 1][0]];
+    // 【2026-11-07 修复·「数据跟不上」的误解】曲线末点为「已收盘周期」时如实说明：
+    // 周末/夜间/节假日没有新交易时段，日线停在最近收盘日、小时线停在最近收盘小时是正确语义
+    // （如周六看到周五 11-06 日K、北京 11-07 02:00 小时K），并非数据断更。
+    // 真源 15 分钟与最新价 60 秒两条链路都在正常跑（与小程序 sessionNote 同一口径）。
+    var noteEl = document.getElementById("sessionNote");
+    if (noteEl) {
+      var lastTs0 = pts0.length ? pts0[pts0.length - 1][0] : 0;
+      var sessionClosed = lastTs0 > 0 && !isLivePeriod(lastTs0, state.gran, nowTs);
+      if (sessionClosed) {
+        var sessionAt = fmtDate(lastTs0, state.gran).replace(/^\d{4}-/, "");
+        noteEl.textContent = "当前为非交易时段（周末 / 夜间 / 节假日），曲线截至 " + sessionAt
+          + " 收盘；真源每 15 分钟仍在生成、最新价每 60 秒仍在刷新，数据未停更。";
+        noteEl.hidden = false;
+      } else {
+        noteEl.textContent = "";
+        noteEl.hidden = true;
+      }
+    }
     chart.setOption(option, true);
     document.getElementById("chartLoading").style.display = "none";
   }
@@ -939,7 +1026,10 @@
     var d = state.data;
     var fx = fxOf(d);
     var primary = MARKET_ORDER.filter(function (m) { return state.markets[m]; })[0] || "london";
-    var raw = d.series[primary] || [];
+    // 【2026-11-07】真源个别市场会带「下一交易日」预置点（周末出现未来日K），
+    // 统计口径必须与图表一致剔除未来点，否则「最新价/日涨跌/区间高低」被未来数据污染。
+    var nowTs = Date.now();
+    var raw = (d.series[primary] || []).filter(function (p) { return p && p[0] <= nowTs; });
     var pts = convertPts(raw, primary, fx);
     var box = document.getElementById("stats");
     if (pts.length < 2) { box.innerHTML = ""; return; }
@@ -1290,13 +1380,16 @@
       });
       if (got) {
         spotState.lastOkAt = Date.now();
+        spotSucceed();        // 定论「实时每分」并持久化，下次冷启动首帧即最终态
         if (state.data) {
           computeAndRenderStats(); // 四卡一起重算，避免「最新价变了但涨跌没变」
           renderUpdateTimes();    // 顶部 / 筛选区时间同步
           if (chart) safeRenderChart(); // 折线图实时末点（菱形标记）随 60 秒现货刷新；保留用户 dataZoom
         }
+      } else {
+        spotFailed();         // 单轮失败不改口，连续 2 轮才如实降级
       }
-    } catch (e) { /* 静默保留上一轮：不回退、不闪烁 */ }
+    } catch (e) { spotFailed(); /* 静默保留上一轮：不回退、不闪烁 */ }
     finally { spotState.fetching = false; }
   }
 
@@ -1319,10 +1412,18 @@
     return !!(state.data && livePricesFor(state.metal, state.data));
   }
   function renderUpdateTimes() {
+    if (!state.data) return; // 首屏数据未到时不渲染时间，避免空时间戳闪一帧（与小程序同口径）
     var p = priceStamp(), c = curveStamp(), e = eventsStamp();
     var hasLive = spotAvailable();
     var ps = fmtLocalSec(p), cs = fmtLocalSec(c), es = fmtLocalSec(e);
-    var cadence = hasLive ? "实时每分" : "真源每15分";
+    // 【2026-11-07 修复·进入时文案跳变】与小程序 renderTimes 同一四态口径，勿单边改：
+    //   ① 有实时报价 → 实时每分；② 本会话已明确降级 → 真源每15分（如实，不假标 60 秒）；
+    //   ③ 冷启动未定论 + 上次成功 → 沿用「实时每分」，首帧即最终态，零跳变；
+    //   ④ 冷启动未定论 + 从未成功 → 中性「校验最新价…」，不误导为没有实时价。
+    var cadence = hasLive ? "实时每分"
+      : (spotCadence.settled && spotCadence.wasOk === false) ? "真源每15分"
+      : spotCadence.lastOk ? "实时每分"
+      : "校验最新价…";
     // 【2026-11-06 反馈③+：时间收敛到筛选区行末一处】折线图下 / 最新价卡内的时间均移除，
     //   价格更新时间统一在筛选区行末右对齐（到分钟），与小程序口径一致；真源节奏如实标注。
     var pe = document.getElementById("priceUpdate");

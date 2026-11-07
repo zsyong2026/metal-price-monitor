@@ -98,6 +98,9 @@
         <div id="chart"></div>
         <div id="chartLoading" class="chart-loading">数据加载中…</div>
       </div>
+      <!-- 【2026-11-07】非交易时段说明：曲线末点为「已收盘周期」时出现，解释为什么不是今天、
+           以及两条更新链路其实都在正常跑（与小程序 session-note 同口径） -->
+      <div class="session-note" id="sessionNote" hidden></div>
       <button id="landscapeBtn" class="ls-btn" title="横屏放大查看（手机）">⛶ 横屏放大</button>
       <button id="fsBtn" class="fs-btn" title="全屏查看（PC）">⛶ 全屏</button>
       <button id="exitLandscape" class="ls-exit" title="退出全屏">✕ 退出</button>

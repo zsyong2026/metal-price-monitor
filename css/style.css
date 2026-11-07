@@ -197,6 +197,18 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   color: var(--ink-soft); font-size: 14px; background: var(--panel);
 }
+/* 【2026-11-07】非交易时段说明：浅底 + 金色左边线，与小程序 .session-note 同口径；
+   hidden 属性必须强制 display:none（否则下面 display:block 会覆盖浏览器默认隐藏） */
+.session-note {
+  font-size: 12px; color: var(--ink-soft); line-height: 1.6;
+  background: rgba(127, 127, 127, .08); border-left: 3px solid var(--gold-deep);
+  border-radius: 4px; padding: 8px 10px; margin: 6px 4px 2px;
+}
+.session-note[hidden] { display: none !important; }
+/* 全屏/横屏下让图表占满可视区，说明条不挤占绘图空间（小程序 full 态同样隐藏） */
+.chart-wrap.fullscreen .session-note,
+.chart-wrap.landscape .session-note,
+.chart-wrap.rotate-fallback .session-note { display: none !important; }
 .chart-wrap.fullscreen { position: fixed; inset: 0; z-index: 999; border-radius: 0; padding: 12px; }
 .chart-wrap.fullscreen #chart { height: 100%; }
 
