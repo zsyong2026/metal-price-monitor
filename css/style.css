@@ -204,13 +204,25 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
   font-size: 13px; padding: 8px 18px; border-radius: 6px; cursor: pointer;
 }
 .cl-btn:hover { opacity: .9; }
-/* 【2026-11-08 修复·说明整合统一】原「休市说明(session-note)」+「图表操作提示」两段合并为单条
-   chart-caption，与小程序同文案、同口径（三端统一）；常驻展示。 */
+/* 【2026-11-08 折叠说明·三端统一契约】默认一行摘要、可展开/收起；分类明细分条 */
 .chart-caption {
-  font-size: 12px; color: var(--ink-soft); line-height: 1.6;
   background: rgba(127, 127, 127, .08); border-left: 3px solid var(--gold-deep);
-  border-radius: 4px; padding: 8px 10px; margin: 6px 4px 2px;
+  border-radius: 4px; padding: 6px 10px; margin: 6px 4px 2px;
 }
+.cc-summary {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  font-size: 12px; color: var(--ink-soft); line-height: 1.5; cursor: pointer;
+}
+.cc-summary::after { content: "▾"; color: var(--gold-deep); margin-left: 6px; }
+.chart-caption.cc-open .cc-summary::after { content: "▴"; }
+.cc-detail { display: none; margin-top: 6px; }
+.chart-caption.cc-open .cc-detail { display: block; }
+.cc-item {
+  font-size: 12px; color: var(--ink-soft); line-height: 1.6;
+  padding-left: 14px; text-indent: -14px;
+}
+.cc-item::before { content: "· "; }
+.cc-item + .cc-item { margin-top: 4px; }
 /* 全屏/横屏下让图表占满可视区，说明条不挤占绘图空间（小程序 full 态同样隐藏） */
 .chart-wrap.fullscreen .chart-caption,
 .chart-wrap.landscape .chart-caption,

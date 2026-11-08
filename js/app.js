@@ -1073,17 +1073,33 @@
     // 记录全量数据跨度，供横轴标签间距过滤换算缩放窗口使用
     var pts0 = aggSrc[active[0]] || aggSrc.london || [];
     if (axisMin != null) lsXRange = [axisMin, axisMax];
-    // 【2026-11-08 修复·说明整合统一】与小程序 chartCaption 同文案、同口径（三端统一）：
-    // 常驻交易时段/虚线/缩放/60秒/15分钟（国内联动价）；休市时前置一句「非交易时段…数据未停更」。
+    // 【2026-11-08 折叠说明·三端统一契约】与小程序 chartCaption【逐字节同文案】（勿单边改）：
+    // 默认折叠显示一行摘要，点击摘要展开分类明细（线型/更新频率/当日未收盘/当前状态），再点收起；
+    // 频率只在「更新频率」条出现一次（无重复）；「当日未收盘」独立成条常驻解释概念。
     var noteEl = document.getElementById("chartCaption");
     if (noteEl) {
       var lastTs0 = pts0.length ? pts0[pts0.length - 1][0] : 0;
       var sessionClosed = lastTs0 > 0 && !isLivePeriod(lastTs0, state.gran, nowTs);
       var sessionAt = lastTs0 ? fmtDate(lastTs0, state.gran).replace(/^\d{4}-/, "") : "";
-      var MECH = "交易时段为实线，非交易时段（夜间 / 周末 / 节假日）以虚线连接；可缩放拖动查看。最新价每 60 秒刷新，历史曲线每 15 分钟更新（国内为联动价）。";
-      noteEl.textContent = sessionClosed
-        ? "当前为非交易时段，曲线截至 " + sessionAt + " 收盘，数据未停更（真源每 15 分钟、最新价每 60 秒仍在更新）。" + MECH
-        : MECH;
+      var items = [
+        "线型：交易时段为实线，非交易时段（夜间 / 周末 / 节假日）以虚线连接；可缩放拖动查看。",
+        "更新频率：最新价每 60 秒刷新（直连实时现货，国内为联动价）；历史曲线每 15 分钟由真源更新。",
+        "当日未收盘：交易时段内末点显示「实时(未收盘)」为盘中实时价，并非当日收盘价；收盘后定格为该日收盘价。",
+        sessionClosed
+          ? "当前状态：非交易时段，曲线截至 " + sessionAt + " 收盘，数据未停更。"
+          : "当前状态：交易时段进行中，曲线末点为实时价（未收盘）。"
+      ];
+      var summary = "图表说明（点击展开） 实线=交易时段，虚线=非交易时段";
+      var sumEl = noteEl.querySelector(".cc-summary");
+      var detEl = noteEl.querySelector(".cc-detail");
+      if (sumEl) {
+        sumEl.textContent = summary;
+        sumEl.onclick = function () {
+          var open = noteEl.classList.toggle("cc-open");
+          sumEl.setAttribute("data-open", open ? "1" : "0");
+        };
+      }
+      if (detEl) detEl.innerHTML = items.map(function (b) { return "<div class='cc-item'>" + b + "</div>"; }).join("");
       noteEl.hidden = false;
     }
     chart.setOption(option, true);

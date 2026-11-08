@@ -98,9 +98,11 @@
         <div id="chart"></div>
         <div id="chartLoading" class="chart-loading">数据加载中…</div>
       </div>
-      <!-- 【2026-11-08 修复·说明整合统一】原「休市说明」+「图表操作提示」两段合并为单条 chart-caption，
-           与小程序同文案、同口径（三端统一）；常驻展示，休市时前置一句「非交易时段…数据未停更」。 -->
-      <div class="chart-caption" id="chartCaption"></div>
+      <!-- 【2026-11-08 折叠说明·三端统一契约】默认一行摘要，点击展开/收起；与小程序同结构 -->
+      <div class="chart-caption" id="chartCaption">
+        <div class="cc-summary" id="ccSummary">图表说明</div>
+        <div class="cc-detail" id="ccDetail"></div>
+      </div>
       <button id="landscapeBtn" class="ls-btn" title="横屏放大查看（手机）">⛶ 横屏放大</button>
       <button id="fsBtn" class="fs-btn" title="全屏查看（PC）">⛶ 全屏</button>
       <button id="exitLandscape" class="ls-exit" title="退出全屏">✕ 退出</button>
