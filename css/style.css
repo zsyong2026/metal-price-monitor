@@ -175,7 +175,8 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 .stat-card .v .his-range .hr-val.down { color: var(--down); }
 /* 【指标看板统一·改】副行恒为灰色弱提示（对齐小程序 .s 11px/ink-soft），
    不再继承涨跌色；涨跌色只落在主数值 .v，避免「一卡两红」显花 */
-.stat-card .sub { font-size: 11px; margin-top: 4px; font-weight: 500; color: var(--ink-soft); }
+/* 【2026-11-09】副行新增「较昨收 <基准>」，允许换行且不撑破半宽卡片 */
+.stat-card .sub { font-size: 11px; margin-top: 4px; font-weight: 500; color: var(--ink-soft); line-height: 1.4; overflow-wrap: anywhere; }
 /* 价格更新时间：筛选区行末右对齐（到分钟；实时每分 / 真源每15分），与小程序口径一致。
    【2026-11-06 修复·单位折行】允许时间自身收缩/省略，绝不再反向挤压标签与芯片；
    极窄屏放不下时尾部省略（完整时间在 title 悬停可见）。 */

@@ -197,11 +197,17 @@
     return v; // domestic 本来就是 元/克
   }
   // 真源末端值：作为「内外盘真实比价」的锚（同一版数据，三端一致）
-  function anchorOf(d, market) {
+  // 【2026-11-09】过滤未来点/无效值，锚点取 <= now 的最后一根有效日K；末根保留（同一版
+  // 最近真实比价，与小程序 utils/chart-core.js 同一口径，勿单边改）。
+  function anchorOf(d, market, nowTs) {
     var arr = d && d.series && d.series[market];
     if (!arr || !arr.length) return null;
-    var v = arr[arr.length - 1][1];
-    return isFinite(v) && v > 0 ? v : null;
+    var now = nowTs || Date.now();
+    for (var i = arr.length - 1; i >= 0; i--) {
+      var p = arr[i];
+      if (p && isFinite(p[0]) && p[0] <= now && isFinite(p[1]) && p[1] > 0) return p[1];
+    }
+    return null;
   }
   // 某金属在当前真源锚点下的三市场实时价（原始单位）；无报价返回 null
   function livePricesFor(metal, d) {
@@ -722,11 +728,19 @@
     return { main: main, dash: dash };
   }
 
+  // 交易日约束（与真源 generate.js isTradingDayUtc、小程序 utils/chart-core.js 同一口径）。
+  // 周末不存在「当前尚未结束的交易日/小时」；月/年为聚合周期，不套用该约束。
+  function isTradingDayUtc(ms) {
+    var w = new Date(ms).getUTCDay();
+    return w !== 0 && w !== 6;
+  }
   // 【2026-11-07 修复·未收盘误标】与小程序 utils/chart-core.js 完全同一口径，勿单边改。
   // 只有折线末点属于「当前尚未结束的周期」时，才允许用 60 秒实时现货覆盖末点并标注「实时(未收盘)」。
   // 周末/夜间/收盘后，末点是上一交易日的**已收盘**日K，标「未收盘」自相矛盾，
   // 更不能拿休市期间的现货价去覆盖已收盘价（用户反馈「日线更新到 6 号，还显示未收盘价」）。
   // 时间戳口径：日线为 UTC 当日零点、小时线为 UTC 整点，统一按北京日历比较。
+  // 【2026-11-09 加固】day/hour 增加交易日约束，与真源 shouldSpliceSpot 对齐，
+  // 杜绝「周六误判交易时段 → 休市现货写进曲线末点与四卡」。
   function isLivePeriod(lastTs, gran, nowTs) {
     if (!isFinite(lastTs) || lastTs <= 0) return false;
     var now = nowTs || Date.now();
@@ -736,10 +750,11 @@
     var sameDay = a.getUTCFullYear() === b.getUTCFullYear()
                && a.getUTCMonth() === b.getUTCMonth()
                && a.getUTCDate() === b.getUTCDate();
-    if (gran === "hour") return sameDay && a.getUTCHours() === b.getUTCHours();
+    var tradingDay = isTradingDayUtc(lastTs);
+    if (gran === "hour") return tradingDay && sameDay && a.getUTCHours() === b.getUTCHours();
     if (gran === "month") return a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth();
     if (gran === "year") return a.getUTCFullYear() === b.getUTCFullYear();
-    return sameDay;
+    return tradingDay && sameDay;
   }
 
   function computeZoom(len) {
@@ -1118,14 +1133,20 @@
     var pts = convertPts(raw, primary, fx);
     var box = document.getElementById("stats");
     if (pts.length < 2) { box.innerHTML = ""; return; }
-    // 【1 分钟实时价】有现货则用「当前市场 + 当前单位」下的实时价，否则回退真源曲线末端（15 分钟版）
+    // 【1 分钟实时价】交易时段用「当前市场 + 当前单位」下的实时价；休市时末根日K是
+    // 【已收盘】的历史交易日，必须回落到该收盘价——否则 60 秒现货会跨过周末/夜间去减
+    // 倒数第二根日K，日涨跌多算一天，与「最新价」卡片也对不上（2026-11-09 修复）。
+    // 判定固定用 'day'：四卡口径与图表粒度无关，不能跟着 state.gran 走到「时」的严格判定上。
     var live = livePricesFor(state.metal, d);
     var liveRaw = live && live[primary] != null ? live[primary] : null;
-    var latest = liveRaw != null
+    var daySessionOpen = isLivePeriod(pts[pts.length - 1][0], "day", nowTs);
+    var latest = (daySessionOpen && liveRaw != null)
       ? convertSpotValue(liveRaw, primary, state.metal, state.gram, fx)
       : pts[pts.length - 1][1];
+    // 日涨跌基准 = 上一交易日收盘价（连续交易贵金属的「开市基准」），
+    // 与 latest / dayAbs / yearVal / hi / lo 全部同市场、同单位。
     var prev = pts[pts.length - 2][1];
-    var todayPct = ((latest - prev) / prev) * 100;
+    var todayPct = prev ? ((latest - prev) / prev) * 100 : 0;
     // 近一年：按时间戳取约 365 天前的点（真实日K仅含交易日，不能按条数索引）
     var yearAgo = pts[pts.length - 1][0] - 365 * 86400000;
     var idxYear = 0;
@@ -1136,8 +1157,9 @@
     var yearPct = ((latest - yearVal) / yearVal) * 100;
     var hi = -Infinity, lo = Infinity;
     for (var i = 0; i < pts.length; i++) { var v = pts[i][1]; if (v > hi) hi = v; if (v < lo) lo = v; }
-    // 最新价刷新后历史区间一并取极值，避免「最新价高于历史高点」这种自相矛盾
-    hi = Math.max(hi, latest); lo = Math.min(lo, latest);
+    // 【2026-11-09】历史区间只取【日K收盘序列】极值，不混入 60 秒盘中现货：
+    // 未收盘的瞬时价不该改写「历史高点/低点」，否则卡片名实不符且每 60 秒抖动。
+    // 与小程序 utils/chart-core.js computeStats 同一口径，勿单边改。
     var unit = useGram() ? "元/克" : d.unit[primary];
     // 【2026-11-06 UI 精简】价格卡单位行去掉「· 联动 / · 实时」后缀（与小程序一致），
     //   联动/实时的数据来源口径已统一在底部说明与图表卡 tooltip 解释，卡片不再重复贴标。
@@ -1147,7 +1169,12 @@
     // 【指标看板统一·改】四卡一律「标题 / 主数值 / 副行」三层结构，与小程序完全对齐：
     //   ① 涨跌类卡片以「涨跌幅 %」为主数值（跨品种可比），绝对值+单位下沉为灰色副行；
     //   ② 单位不塞标题（四卡标题等长）；③ 仅主数值带涨跌色，副行恒灰，避免一卡两色一片红。
-    var dayAbs = (latest - prev >= 0 ? "+" : "") + fmtNum(latest - prev) + " " + unit;
+    // 【2026-11-09】副行给出「涨跌绝对值 + 基准(前一交易日收盘价)」，用户可用
+    // 「最新价 − 基准 = 涨跌绝对值」一眼核对；与小程序端逐字同口径（直减、>0 才带 +）。
+    // 连续交易贵金属无独立「当日开市价」，日涨跌基准即前收；跨周末用「昨日收盘」措辞失实，
+    // 故统一写「较前收」（前一交易日收盘），两端逐字一致。
+    var dayDelta = latest - prev;
+    var dayAbs = (dayDelta > 0 ? "+" : "") + fmtNum(dayDelta) + " " + unit + " · 较前收 " + fmtNum(prev);
     var spanMs = pts.length > 1 ? (pts[pts.length - 1][0] - pts[0][0]) : 0;
     var spanYears = Math.max(1, Math.round(spanMs / (365 * 86400000) * 10) / 10);
     box.innerHTML =
