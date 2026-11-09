@@ -210,13 +210,14 @@
     return null;
   }
   // 某金属在当前真源锚点下的三市场实时价（原始单位）；无报价返回 null
-  function livePricesFor(metal, d) {
+  function livePricesFor(metal, d, nowTs) {
     var q = spotState.quotes[metal];
     if (!q || !isFinite(q.price) || q.price <= 0) return null;
     var fx = fxOf(d);
     var usdhkd = fx.hkdcny > 0 ? fx.usdcny / fx.hkdcny : 7.8;
     var lNow = metal === "copper" ? q.price * LB_PER_TON : q.price;
-    var lRef = anchorOf(d, "london"), dRef = anchorOf(d, "domestic");
+    // nowTs 可选：测试可注入固定时刻；生产不传，anchorOf 内部用 Date.now()
+    var lRef = anchorOf(d, "london", nowTs), dRef = anchorOf(d, "domestic", nowTs);
     // 国内 = 真源最近一次真实比价 × 国际现货涨幅（保住升水，不硬编码系数）
     var dNow = (lRef && dRef) ? dRef * (lNow / lRef) : null;
     if (!isFinite(dNow) || dNow <= 0) dNow = null;
@@ -750,11 +751,14 @@
     var sameDay = a.getUTCFullYear() === b.getUTCFullYear()
                && a.getUTCMonth() === b.getUTCMonth()
                && a.getUTCDate() === b.getUTCDate();
-    var tradingDay = isTradingDayUtc(lastTs);
-    if (gran === "hour") return tradingDay && sameDay && a.getUTCHours() === b.getUTCHours();
-    if (gran === "month") return a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth();
-    if (gran === "year") return a.getUTCFullYear() === b.getUTCFullYear();
-    return tradingDay && sameDay;
+    // 【2026-11-09 二次加固·全粒度统一】所有粒度一律先要求「末点落在当前交易日」，
+    // 与真源 shouldSpliceSpot 同口径。旧写法 month/year 只比年月，休市周六切月/年时
+    // 图表末点会被 60 秒现货覆盖并标「实时(未收盘)」，四卡却按 day 回落到收盘价 →
+    // 同屏两个最新价。与小程序 utils/chart-core.js 完全同一口径，勿单边改。
+    var curDayOpen = isTradingDayUtc(lastTs) && sameDay;
+    if (!curDayOpen) return false;
+    if (gran === "hour") return a.getUTCHours() === b.getUTCHours();
+    return true; // day / month / year：sameDay 已隐含 sameMonth / sameYear
   }
 
   function computeZoom(len) {
