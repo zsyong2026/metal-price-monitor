@@ -1,0 +1,319 @@
+/* events-mobile.css —— 手机端事件查看页（独立于主站样式） */
+:root {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --ink: #1a1d24;
+  --soft: #5b6472;
+  --hint: #8a919d;
+  --line: #e6e9ef;
+  --line-strong: #d3d8e2;
+  --gold: #d4a017;
+  --gold-deep: #b8860b;
+  --up-ink: #b22b25;
+  --up-bg: rgba(214, 69, 60, .10);
+  --down-ink: #147a43;
+  --down-bg: rgba(28, 157, 87, .10);
+  --neutral-ink: #5b6472;
+  --neutral-bg: rgba(127, 127, 127, .12);
+  --tap: rgba(127, 127, 127, .08);
+  --radius: 14px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1218;
+    --panel: #171b23;
+    --ink: #e8ebf0;
+    --soft: #a7b0bf;
+    --hint: #77808f;
+    --line: #2a303c;
+    --line-strong: #3a4250;
+    --up-ink: #ef8a83;
+    --up-bg: rgba(214, 69, 60, .16);
+    --down-ink: #5cc98d;
+    --down-bg: rgba(28, 157, 87, .16);
+    --neutral-ink: #a7b0bf;
+    --neutral-bg: rgba(160, 168, 180, .14);
+    --tap: rgba(200, 208, 220, .10);
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-text-size-adjust: 100%;
+}
+
+.wrap {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 12px 14px 0;
+}
+
+.top { padding: 6px 2px 14px; }
+
+.top-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 500;
+  letter-spacing: .5px;
+}
+
+.to-main {
+  flex: 0 0 auto;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border: 0.5px solid var(--line-strong);
+  border-radius: 10px;
+  color: var(--gold-deep);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.to-main:active { background: var(--tap); }
+
+.sub {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--soft);
+}
+
+.scope-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--hint);
+}
+
+.tabs, .chips {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 4px;
+  scrollbar-width: none;
+}
+
+.tabs::-webkit-scrollbar, .chips::-webkit-scrollbar { display: none; }
+
+.tab, .chip {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 0.5px solid var(--line-strong);
+  border-radius: 22px;
+  background: var(--panel);
+  color: var(--soft);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.tab.active, .chip.active {
+  border-color: var(--gold);
+  background: var(--panel);
+  color: var(--gold-deep);
+  font-weight: 500;
+}
+
+.chips { margin-top: 10px; }
+
+.count {
+  margin: 14px 2px 8px;
+  font-size: 12px;
+  color: var(--hint);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.card {
+  background: var(--panel);
+  border: 0.5px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px;
+}
+
+.card-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.e-date {
+  font-size: 12px;
+  color: var(--hint);
+  font-variant-numeric: tabular-nums;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 9px;
+  border-radius: 11px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.b-cat { background: var(--neutral-bg); color: var(--neutral-ink); }
+.b-up { background: var(--up-bg); color: var(--up-ink); }
+.b-down { background: var(--down-bg); color: var(--down-ink); }
+.b-mixed { background: var(--neutral-bg); color: var(--neutral-ink); }
+
+.e-title {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.e-summary {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--soft);
+  overflow-wrap: anywhere;
+}
+
+.e-meta {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--soft);
+}
+
+.e-meta b { color: var(--ink); font-weight: 500; }
+
+.e-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+
+.e-tag {
+  padding: 2px 8px;
+  border: 0.5px solid var(--line);
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--soft);
+}
+
+.e-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 0.5px solid var(--line);
+  font-size: 12px;
+  color: var(--hint);
+}
+
+.e-link {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--gold-deep);
+  text-decoration: none;
+}
+
+.e-link:active { background: var(--tap); }
+
+.empty { margin: 24px 2px; font-size: 13px; color: var(--hint); }
+
+.more {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  margin: 14px 0 4px;
+  border: 0.5px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--soft);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.more:active { background: var(--tap); }
+
+.notes { margin-top: 28px; }
+
+.notes h2 {
+  margin: 0 2px 10px;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.foot-sec {
+  background: var(--panel);
+  border: 0.5px solid var(--line);
+  border-radius: 10px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.foot-sec summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+  list-style: none;
+}
+
+.foot-sec summary::-webkit-details-marker { display: none; }
+
+.foot-sec summary::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  border-right: 1.5px solid var(--soft);
+  border-bottom: 1.5px solid var(--soft);
+  transform: rotate(45deg);
+  transition: transform .15s ease;
+}
+
+.foot-sec[open] summary::after { transform: rotate(-135deg); }
+
+.foot-body {
+  padding: 0 14px 12px;
+  font-size: 12px;
+  color: var(--soft);
+}
+
+.foot-body p, .foot-body ol { margin: 0 0 8px; }
+.foot-body p:last-child, .foot-body ol:last-child { margin-bottom: 0; }
+.foot-body ol { padding-left: 20px; }
+.foot-body li { margin-bottom: 6px; }
+.foot-body b { color: var(--ink); font-weight: 500; }
+
+.tail {
+  height: 24px;
+  padding-bottom: constant(safe-area-inset-bottom);
+  padding-bottom: env(safe-area-inset-bottom);
+}
