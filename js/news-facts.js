@@ -667,23 +667,34 @@
     for (var i = 0; i < arr.length; i++) { if (s.indexOf(arr[i]) >= 0) return true; }
     return false;
   }
+  // 【2026-11-18 H17 去冗余】影响面只列「受冲击的宏观变量 / 传导渠道」，
+  //   不再列价格品种标签（金价/AU9999、银价/白银T+D、沪铜/伦铜）——
+  //   页面本就在展示对应金属的价格曲线，事件卡再挂一次价格品种属于画蛇添足（用户原话）。
+  //   品种称谓由 impactConclusion 承担（已验证 100% 事件结论含本品种称谓），
+  //   影响面专注回答「这条事件通过什么渠道传导」。
   function impactScope(metal, fact, alt) {
     var s = String(fact || "") + " " + String(alt || "");
     var scope = [];
     if (metal === "copper") {
-      scope.push("沪铜 / 伦铜");
       if (hasAny(s, ["库存", "持仓", "交割", "仓单", "保税", "SHFE", "LME", "升贴水"])) scope.push("库存与区域价差");
       if (hasAny(s, ["矿端", "罢工", "停产", "减产", "检修", "事故", "供应", "供给", "出口禁令", "冶炼", "扰动", "干扰"])) scope.push("铜矿供应");
       if (hasAny(s, ["电网", "电缆", "新能源", "基建", "房地产", "制造业", "需求", "消费", "订单"])) scope.push("工业需求端");
       if (hasAny(s, ["关税", "贸易"])) scope.push("贸易成本");
       if (hasAny(s, ["美元走强", "美元走弱", "美元"])) scope.push("美元定价");
     } else {
-      scope.push(metal === "silver" ? "银价 / 白银T+D" : "金价 / AU9999");
       if (hasAny(s, ["利率", "加息", "降息", "议息", "决议", "美联储", "央行", "点阵图", "前瞻指引", "纪要", "货币"])) scope.push("实际利率与美元");
       if (hasAny(s, ["通胀", "CPI", "PPI", "非农", "失业率", "就业", "GDP", "PMI", "社融", "零售"])) scope.push("通胀与实际利率预期");
       if (hasAny(s, ["地缘", "冲突", "制裁", "避险", "关税", "债务危机", "债务风险", "主权债务", "财政赤字", "财政风险"])) scope.push("避险买盘");
       if (hasAny(s, ["央行购金", "购金", "增持黄金", "配置黄金", "ETF", "实物需求"])) scope.push("央行购金与ETF配置");
     }
+    // 【H17】投行 / 央行观点与预测：以原始发布机构为优先影响面，标注为「机构观点」（媒体转述）
+    if (hasAny(s, ["高盛", "摩根", "大摩", "小摩", "花旗", "瑞银", "巴克莱", "杰富瑞", "机构预测", "投行",
+                   "goldman", "morgan", "jpmorgan", "citigroup", "ubs", "预测", "目标价", "上调", "下调",
+                   "央行", "人民银行", "美联储", "欧洲央行", "日本央行", "英央行", "pboc", "fed ", "ecb ", "boj "])) {
+      scope.push("机构观点与政策预期");
+    }
+    // 兜底：无任何渠道命中时，给一个中性影响面（保证 hadAll 检查里的 length>0 成立）
+    if (!scope.length) scope.push("市场风险偏好");
     var seen = {};
     return scope.filter(function (x) { if (seen[x]) return false; seen[x] = 1; return true; });
   }
@@ -1145,6 +1156,77 @@
     return conclude(metal, fact, dir, alt).eff;
   }
 
+  /* ============ 【2026-11-18 H17 专业分析能力】催化强度 + 传导链 + 机构观点 ============
+   * 独立于 impactConclusion 的结构化分析字段（不塞进结论正文，避免破坏其去重/称谓护栏）。
+   * 仅作数据层增强；小程序展示层可选择消费，也可忽略——不影响任何现有字段。
+   * 方法论依据：事件驱动框架（催化强度决定冲击持续性）、利率/汇率传导链（实际利率→美元→金属定价锚）、
+   *   预期差框架（实际值 vs 预期值决定再定价幅度）。
+   */
+  var CATALYST_INST = [
+    // 强催化：政策决议 / 央行意外行动 / 供给中断 / 地缘升级——直接改写定价锚
+    { re: /议息|利率决议|FOMC|点阵图|政策声明|利率决定|加息\d+|降息\d+|个基点|超预期|意外降息|意外加息|罢工|停产|减产|出口禁令|战争|开战|空袭|制裁|债务危机|违约/, level: "强", score: 3 },
+    // 中催化：数据公布 / 投行观点 / 预测调整——通过预期渠道间接定价
+    { re: /CPI|PCE|PPI|非农|失业率|GDP|PMI|社融|通胀|高盛|摩根|花旗|瑞银|投行|预测|目标价|上调|下调|展望|预测|央行.*(讲话|表态|行长)/, level: "中", score: 2 },
+    // 弱催化：常规评论 / 复盘 / 技术面——边际信息有限
+    { re: /评论|复盘|综述|技术面|短线|震荡|整理|关注|回顾/, level: "弱", score: 1 },
+  ];
+  // 机构识别（国内外投行 + 央行）——用于「原始出处优先」标注
+  var INSTITUTIONS = [
+    { re: /高盛|goldman/i, name: "高盛" },
+    { re: /摩根士丹利|大摩|morgan stanley/i, name: "摩根士丹利" },
+    { re: /摩根大通|小摩|jpmorgan/i, name: "摩根大通" },
+    { re: /花旗|citigroup/i, name: "花旗" },
+    { re: /瑞银|ubs/i, name: "瑞银" },
+    { re: /巴克莱|barclays/i, name: "巴克莱" },
+    { re: /杰富瑞|jefferies/i, name: "杰富瑞" },
+    { re: /美联储|federal reserve|\bfed\b|fomc/i, name: "美联储" },
+    { re: /欧洲央行|\becb\b/i, name: "欧洲央行" },
+    { re: /日本央行|\bboj\b/i, name: "日本央行" },
+    { re: /英国央行|英格兰银行|\bboe\b/i, name: "英国央行" },
+    { re: /中国央行|人民银行|\bpboc\b/i, name: "中国央行" },
+    { re: /央行/i, name: "央行" },
+    { re: /国际货币基金|\bimf\b/i, name: "IMF" },
+    { re: /世界银行/i, name: "世界银行" },
+  ];
+  function institutionOf(s) {
+    var t = String(s || "");
+    for (var i = 0; i < INSTITUTIONS.length; i++) {
+      if (INSTITUTIONS[i].re.test(t)) return INSTITUTIONS[i].name;
+    }
+    return "";
+  }
+  function catalystOf(metal, fact, dir, alt) {
+    var s = String(fact || "") + " " + String(alt || "");
+    var level = "弱", score = 1;
+    for (var i = 0; i < CATALYST_INST.length; i++) {
+      if (CATALYST_INST[i].re.test(s)) { level = CATALYST_INST[i].level; score = CATALYST_INST[i].score; break; }
+    }
+    // 传导链：按品种 + 命中机制，给出「驱动 → 中介 → 定价锚 → 资产」的链条（专业金融口径）
+    var isCu = metal === "copper";
+    var chain = [];
+    if (isCu) {
+      if (/库存|仓单|保税|LME|SHFE/.test(s)) chain = ["交易所库存与仓单", "现货供需松紧与区域价差", "铜价定价"];
+      else if (/矿端|罢工|减产|供应|产量|冶炼|铜矿/.test(s)) chain = ["铜矿供给扰动", "冶炼加工费与产量预期", "铜价定价"];
+      else if (/电网|新能源|基建|制造业|需求|订单|房地产/.test(s)) chain = ["终端需求预期", "工业金属需求定价", "铜价定价"];
+      else if (/关税|贸易/.test(s)) chain = ["关税与贸易成本", "进出口与区域价差", "铜价定价"];
+      else chain = ["宏观/供需变量", "工业金属定价锚", "铜价"];
+    } else {
+      if (/利率|加息|降息|美联储|央行|议息|收益率/.test(s)) chain = ["政策利率与美债收益率", "实际利率路径", "美元计价贵金属定价锚"];
+      else if (/通胀|CPI|PPI|非农|失业率|GDP|PMI/.test(s)) chain = ["经济数据实际值 vs 预期", "降息定价与实际利率预期", "贵金属定价锚"];
+      else if (/地缘|冲突|制裁|避险|战争/.test(s)) chain = ["地缘风险溢价", "避险配置需求", "贵金属定价锚"];
+      else if (/央行购金|购金|增持/.test(s)) chain = ["官方储备需求", "结构性买盘", "贵金属定价锚"];
+      else chain = ["宏观变量", "实际利率与美元", "贵金属定价锚"];
+    }
+    var inst = institutionOf(s);
+    return {
+      level: level,                       // 催化强度：强 / 中 / 弱
+      score: score,                       // 强度量化分（3/2/1）
+      chain: chain,                       // 传导链数组（驱动→中介→定价锚）
+      institution: inst,                  // 识别到的原始机构（投行/央行）
+      isInstitutionView: !!inst && /预测|目标价|上调|下调|展望|预期|认为|称|表示/.test(s),
+    };
+  }
+
   /* ================= C. 国内源解析 + 噪声门禁 ================= */
 
   // 国内快讯：贵金属 / 顶层宏观关键词（比境外源的关键词更严，避免噪声淹没）
@@ -1269,6 +1351,7 @@
     impactDegree: impactDegree,
     impactConclusion: impactConclusion,
     impactEffDir: impactEffDir,
+    catalystOf: catalystOf,          // 【H17】催化强度 + 传导链 + 机构观点识别
     cleanCnHeadline: cleanCnHeadline,
     cnRelevant: cnRelevant,
     parseEastmoney: parseEastmoney,

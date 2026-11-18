@@ -7,6 +7,8 @@ const path = require("path");
 const ED = require(path.join(__dirname, "js", "event-dedupe.js"));
 // 【C20】事件「具体化」能力包（事实抽取 + 国内源解析），网页版与云函数共用同一份
 const NF = require(path.join(__dirname, "js", "news-facts.js"));
+// 【2026-11-18 H17】事件-价格相关性真源滚动计算（事件研究法，与三端前端同源）
+const EC = require(path.join(__dirname, "js", "event-corr.js"));
 
 const DATA_DIR = path.join(__dirname, "data");
 const OZ2G = 31.1034768;
@@ -2274,6 +2276,7 @@ function splitCrossMetalEvents(res) {
       copy.impactDegree = NF.impactDegree(target, p.e.title, copy.impact, base);
       copy.impactConclusion = NF.impactConclusion(target, p.e.title, copy.impact, base);
       copy.impactEff = NF.impactEffDir(target, p.e.title, copy.impact, base);
+      copy.analysis = NF.catalystOf(target, p.e.title, copy.impact, base); // 【H17】跨品种拆份同步重算分析字段
       if (base.length >= 8) copy.summary = clipSummary(base, 110) + impactSuffix(target, p.e.title, copy.impact, base);
       bucket.push(copy);
       cloned++;
@@ -2299,6 +2302,8 @@ function splitCrossMetalEvents(res) {
       e.impactDegree = NF.impactDegree(m, e.title, imp, alt);
       e.impactConclusion = nextConcl;
       e.impactEff = nextEff;
+      // 【H17】存量条目（走自愈重校）补齐分析字段：impactScope 已不含价格品种标签，此处一并重算
+      e.analysis = NF.catalystOf(m, e.title, imp, alt);
       if (!hadAll) fieldFilled++;
       else if (changed) effFixed++;
     }
@@ -2354,16 +2359,23 @@ function jaccard(a, b) {
 // 【C22 用户要求】「尽量展示权威信息、事件」→ 把官方一手源（央行/统计局/SMM）提到最高档，
 //   使其在跨源聚类时优先成为「权威出处」，门户转述退居其次。
 var AUTHORITY_RANK = [
-  // —— 官方一手源（最高档）——
-  ["美联储官方", 6], ["欧洲央行官方", 6], ["国家统计局", 6], ["smm有色", 6],
-  ["federal reserve", 6], ["federalreserve", 6],
+  // 【2026-11-18 H17】官方一手源 + 投行/央行原始发布（最高档）——
+  //   用户要求「以原始出处为最优先展示」：同一预测多家转述时，原始机构（高盛/摩根/央行）留正本。
+  ["美联储官方", 7], ["欧洲央行官方", 7], ["国家统计局", 7], ["smm有色", 6],
+  ["federal reserve", 7], ["federalreserve", 7],
+  ["高盛", 7], ["goldman", 7], ["摩根士丹利", 7], ["大摩", 7], ["morgan stanley", 7],
+  ["摩根大通", 7], ["小摩", 7], ["jpmorgan", 7], ["花旗", 7], ["citigroup", 7],
+  ["瑞银", 7], ["ubs", 7], ["巴克莱", 7], ["杰富瑞", 7],
+  ["中国人民银行", 7], ["人民银行", 7], ["中国央行", 7], ["pboc", 7],
+  ["日本央行", 6], ["boj", 6], ["英国央行", 6], ["英格兰银行", 6], ["boe", 6],
+  ["imf", 6], ["国际货币基金", 6],
   // —— 通讯社 ——
   ["wsj", 5], ["wall street", 5],
   ["reuters", 5], ["路透", 5],
   ["bloomberg", 5], ["彭博", 5],
   // —— 一线财经 ——
   ["cnbc", 4], ["cnbc 商品", 4],
-  ["fed", 4], ["美联储", 4],
+  ["fed", 4], ["美联储", 4], ["欧洲央行", 4], ["ecb", 4],
   ["ft", 3], ["financial times", 3],
   ["新华社", 4], ["人民", 3], ["央视", 3],
   ["seekingalpha", 3], ["fxstreet", 3],
@@ -2681,13 +2693,22 @@ async function buildEvents() {
       const byAuth = cl.items.slice().sort((a, b) => authorityOf(b.source) - authorityOf(a.source));
       const srcList = [];
       byAuth.forEach((it) => { if (srcList.indexOf(it.source) < 0) srcList.push(it.source); });
+      // 【2026-11-18 H17 专业分析】催化强度 + 传导链 + 机构观点识别
+      const analysis = NF.catalystOf(m, rep.title, impactOf(rep.title), rep.desc);
+      // 【H17 原始出处优先】内容里若点名了投行 / 央行（高盛/摩根/美联储…），
+      //   该机构才是真正的权威出处（媒体只是转述）→ 提升到 authoritativeSource，
+      //   并把「媒体转述」标注写进 analysis，避免把转述媒体当成原始出处。
+      let authoritative = rep.source;
+      if (analysis.institution && authorityOf(analysis.institution) >= authorityOf(rep.source)) {
+        authoritative = analysis.institution;
+      }
       res[m].push({
         date: rep.date,
         title,
         impact: impactOf(rep.title),
         category: cat,
         source: "自动归纳 · " + srcList.join(" / "),      // 含全部来源，权威出处居首
-        authoritativeSource: rep.source,                 // 【C21】显式权威出处
+        authoritativeSource: authoritative,               // 【C21/H17】原始机构优先，否则源权威度最高者
         sources: Array.from(new Set(cl.items.map((i) => i.source))), // 全部来源（结构化，便于前端标注）
         summary: summary,
         url: rep.url || "",
@@ -2697,6 +2718,7 @@ async function buildEvents() {
         impactDegree: NF.impactDegree(m, rep.title, impactOf(rep.title), rep.desc),
         impactConclusion: NF.impactConclusion(m, rep.title, impactOf(rep.title), rep.desc),
         impactEff: NF.impactEffDir(m, rep.title, impactOf(rep.title), rep.desc),
+        analysis: analysis,                               // 【H17】催化强度 / 传导链 / 机构观点（新字段，前端可选消费）
         auto: true,
         fetchedAt, // 入库时间（与事件发生日 date 分开，用于展示「事件更新至…」）
       });
@@ -2756,6 +2778,23 @@ async function buildEvents() {
     });
     res[m] = res[m].slice(0, 80);
   }
+  // 【2026-11-18 H17】相关性指数真源滚动补算：对事件窗已走完的事件写入 e.corr，
+  //   未走完的保持 null，下一轮（每 15 分钟）自动补算。价格序列来自本轮 generateAll 已写盘的
+  //   data/{metal}.json（顺序：generateAll → buildEvents → bundle），与前端算法同源。
+  let corrComputed = 0, corrSkipped = 0;
+  for (const m of METALS_ARR) {
+    let priceData = null;
+    try { priceData = JSON.parse(fs.readFileSync(path.join(DATA_DIR, m + ".json"), "utf-8")); } catch (e) { priceData = null; }
+    if (!priceData || !priceData.series) {
+      // 读不到价格序列：全部置 null（下轮补算），不影响事件本身落盘
+      (res[m] || []).forEach((e) => { e.corr = null; });
+      continue;
+    }
+    const st = EC.attachCorr(priceData, res[m], fetchedAt);
+    corrComputed += st.computed;
+    corrSkipped += st.skipped;
+  }
+  console.log(`[corr] 真源滚动补算：已定稿 ${corrComputed} 条，事件窗未走完 ${corrSkipped} 条（下轮自动补）`);
   // 事件数据元信息（独立文件，与价格 meta.json 分开：分数据展示各自更新时间）
   const eventsMeta = {
     updatedAt: fetchedAt,
@@ -2837,14 +2876,18 @@ function validateEvents(res) {
       errs.push(m + "视图内重复 " + xd.length + " 组，例：" + xd[0].items[0] + " ≈ " + xd[0].keeper);
     }
   }
-  // 副本措辞串味：影响面标签里出现的品种必须覆盖该桶品种（金银比等关联表述写在事实正文里，不受此限）
-  const SCOPE_RE = { gold: /金/, silver: /银/, copper: /铜/ };
+  // 副本措辞串味（【2026-11-18 H17 改口径】）：
+  //   旧规则查 impactScope 是否含本品种字（金/银/铜）——但 H17 已把 impactScope 的
+  //   「金价/AU9999 / 银价/白银T+D / 沪铜/伦铜」价格品种标签去掉（页面本就展示价格曲线，属冗余），
+  //   影响面现在只列传导渠道，不再带品种称谓。品种称谓改由 impactConclusion 承担
+  //   （三端渲染的结论正文），故本门禁同步改查结论正文，反串味意图不变、载体换了。
+  const SCOPE_RE = { gold: /金价|黄金/, silver: /银价|白银/, copper: /铜价|沪铜|伦铜|LME铜/ };
   for (const m of ["gold", "silver", "copper"]) {
     const bad = ((res && res[m]) || []).filter((e) => {
-      const sc = Array.isArray(e.impactScope) ? e.impactScope.join(" ") : String(e.impactScope || "");
-      return sc && !SCOPE_RE[m].test(sc);
+      const cc = String(e.impactConclusion || "");
+      return !SCOPE_RE[m].test(cc);
     });
-    if (bad.length) errs.push(m + ":影响面串味 " + bad.length + " 条，例：" + String(bad[0].title).slice(0, 30) + " → " + JSON.stringify(bad[0].impactScope));
+    if (bad.length) errs.push(m + ":结论串味 " + bad.length + " 条，例：" + String(bad[0].title).slice(0, 30) + " → " + String(bad[0].impactConclusion || "").slice(0, 40));
   }
   // 影响品种字段完整性：缺失会导致按品种查看丢事件
   for (const m of ["gold", "silver", "copper"]) {

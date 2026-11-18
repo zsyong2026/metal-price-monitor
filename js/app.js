@@ -1420,9 +1420,16 @@
   }
 
   // 按事件键缓存（切换金属/重载数据时由 switchMetal 清空）
+  // 【2026-11-18 H17】优先读真源（generate.js）滚动落盘的 ev.corr；
+  //   仅当旧数据 / 未回填（ev.corr 缺失）时才降级本地计算。三端数值同源，结果一致。
   function corrFor(ev) {
     var key = ev.date + "|" + (ev.title || "");
-    if (corrCache[key] === undefined) corrCache[key] = eventCorrelation(state.data, ev);
+    if (corrCache[key] !== undefined) return corrCache[key];
+    if (ev.corr && typeof ev.corr.idx === "number" && ev.corr.complete === true) {
+      corrCache[key] = ev.corr;              // 真源算好（含计算时间，滚动补算）
+    } else {
+      corrCache[key] = eventCorrelation(state.data, ev);  // 降级：本地算
+    }
     return corrCache[key];
   }
 
