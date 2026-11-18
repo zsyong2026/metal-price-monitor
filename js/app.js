@@ -345,11 +345,26 @@
       metals: { gold: f["gold.json"], silver: f["silver.json"], copper: f["copper.json"] },
     };
   }
+  // 【2026-11-18 H21 修复】整包还须「新鲜」：jsDelivr @main 的 CDN 会缓存住旧的
+  //   data/bundle.json（实测卡在 03:00Z 近 5 小时，带已滚出的旧事件），旧的 bundleValid
+  //   只看结构齐全就判可用 → loadRace 里它先返回就 win()，把新的分文件源 abort 掉，
+  //   旧数据还被写进 localStorage 秒开缓存，形成「修好的事件永远看不到」的死循环。
+  //   真源节奏 15 分钟，容忍 3 轮失败 = 45 分钟门槛；超时判无效，自动降级到新分文件源。
+  //   新鲜时不额外开销（ bundle 正常命中），仅在陈旧时多一次分文件竞速。
+  var BUNDLE_MAX_AGE_MS = 45 * 60 * 1000;
+  function bundleFresh(b) {
+    var x = normalizeBundle(b);
+    var t = x && x.meta && Date.parse(x.meta.generatedAt);
+    if (!t || isNaN(t)) return false;
+    return (Date.now() - t) <= BUNDLE_MAX_AGE_MS && (Date.now() - t) > -5 * 60 * 1000;
+  }
   function bundleValid(b) {
     var x = normalizeBundle(b);
     return !!(x && x.meta && x.meta.generatedAt && x.metals &&
       x.metals.gold && x.metals.silver && x.metals.copper);
   }
+  // tryBundle 专用校验：结构齐全 + 新鲜。老的 bundleValid 仍保留给别处（语义=结构合法）。
+  function bundleUsable(b) { return bundleValid(b) && bundleFresh(b); }
   // 持久缓存的准入比整包宽松：meta + 至少一个金属即可秒开首屏。
   // 首屏最小集本来就只拉当前金属，若强求三金属齐全，缓存会永远写不进去
   // （本地真浏览器实测：三金属由后台补齐前 writeBootCache 一直不触发）。
@@ -362,11 +377,17 @@
   // 端上持久缓存：二次进入 / 杀进程重进直接 0 网络秒开，后台再静默校验真源版本。
   // 完整包约 550KB，localStorage 5MB 足够；写入失败（隐私模式/配额）静默忽略，不影响主链路。
   var BOOT_KEY = "mm.boot.v3";
+  // 【2026-11-18 H21】缓存新鲜度兜底：jsDelivr 陈旧 bundle 曾被写进缓存（实测卡 03:00Z），
+  //   秒开时先把已滚出的旧事件闪给用户。超过 2 小时的缓存直接丢弃不秒开（真源 15 分钟
+  //   节奏，正常缓存落后 <1 小时，2 小时不会误伤），改由网络拿新数据。
+  var BOOT_CACHE_MAX_AGE_MS = 2 * 60 * 60 * 1000;
   function readBootCache() {
     try {
       var s = localStorage.getItem(BOOT_KEY);
       var b = s ? JSON.parse(s) : null;
       if (!cacheValid(b)) return null;
+      var t = Date.parse(b.meta.generatedAt);
+      if (!t || isNaN(t) || (Date.now() - t) > BOOT_CACHE_MAX_AGE_MS) return null;
       lastWrittenStamp = b.meta.generatedAt || "";
       return normalizeBundle(b);
     } catch (e) { return null; }
@@ -403,7 +424,8 @@
     var urls = STATIC
       ? [local, canon(CANON + "data/bundle.json"), jsd(JSD + "data/bundle.json"), api]
       : [api, local, canon(CANON + "data/bundle.json"), jsd(JSD + "data/bundle.json")];
-    return loadRace(urls, bundleValid).then(normalizeBundle);
+    // 【H21】用 bundleUsable（结构+新鲜）而非 bundleValid（仅结构），挡住 jsDelivr 陈旧缓存
+    return loadRace(urls, bundleUsable).then(normalizeBundle);
   }
 
   // 单文件候选源：首屏只拉「当前金属 + meta + events + eventsMeta」4 个小文件并行，
