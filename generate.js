@@ -1268,7 +1268,7 @@ function normalizeTags(tags, title) {
   }
   return t.slice(0, 6);
 }
-function zhTitle(t, tags) {
+function zhTitle(t, tags, desc) {
   // 【C22 用户反馈】「标题…的信息，不知所云。与事件的概括、影响结论/预测，对不上」
   //   三条改法：
   //   ① 中文原文（国内源，天然人话）直接作标题，且**不再硬切 26 字**——
@@ -1277,7 +1277,27 @@ function zhTitle(t, tags) {
   //   ② 英文源优先「规则化事实」→ 再「可读译文」，两步都拿不到具体信息时才走末路。
   //   ③ 末路不再是「标签·标签：方向」拼装（信息量为零），改为**实体句**：
   //      「美联储相关动向公布」这类至少能说明是什么事，而不是「通胀·加息：利多驱动」。
-  const cn = /[\u4e00-\u9fa5]/.test(t) ? NF.cleanCnHeadline(t).replace(/[，。；、：]+$/, "") : "";
+  let cn = /[\u4e00-\u9fa5]/.test(t) ? NF.cleanCnHeadline(t).replace(/[，。；、：]+$/, "") : "";
+  // 【2026-11-18 H19-bugfix】快讯标题断在词中间（如「…共同签」）且正文有完整首句时，
+  //   用正文首句作标题源，避免标题以残词收尾、与摘要对不上（实拍「…商鹏飞」标题配
+  //   「…共同签署了《…》」摘要）。判据：正文以标题开头且更长、断点在句中而非标点。
+  if (cn.length >= 6 && desc && /[\u4e00-\u9fa5]/.test(desc)) {
+    const full = NF.cleanCnHeadline(String(desc)).replace(/^[【\[][^】\]]{1,24}[】\]]\s*/, "").replace(/^[：:，,。、；\s]+/, "");
+    if (full.indexOf(cn) === 0 && full.length > cn.length && !/^[。！？；]/.test(full.slice(cn.length))) {
+      const stop = full.search(/[。！？]/);
+      if (stop >= 6) {
+        const firstSentence = full.slice(0, stop).replace(/[，。；、：]+$/, "");
+        // 并列主语 + 共同谓语（「A行长与B部长、C行长共同签署了《…》」）：
+        //   trimCnTitle 会在并列人名间的顿号处误断，留下「…商鹏飞」残句。
+        //   这类完整动作句直接去时间前缀后返回（≤60 字，UI 换行即可），保住谓语与宾语。
+        if (/共同(签署|发布|宣布|达成|表示)|签署了《|签订了《|发布了《/.test(firstSentence)) {
+          const compact = firstSentence.replace(/^(近期|日前|今日|昨日|当地时间|据[^，]{0,8})[，,]/, "");
+          if (compact.length <= 60) return compact;
+        }
+        cn = firstSentence;
+      }
+    }
+  }
   if (cn.length >= 6) return trimCnTitle(cn);
   // ② 英文具体事实（规则化抽取，如「美联储维持利率不变（不加息）」「美国通胀率 3.5%」）
   const fd = NF.zhFactDetail(t);
@@ -2321,6 +2341,25 @@ function zhSummary(t, desc, tags, cat, metal) {
   if (fo.from === "cn" && /[\u4e00-\u9fa5]/.test(detail)) {
     let d = detail.replace(/^【[^】]{0,24}】\s*/, "").replace(/^[：:，,。；、\s]+/, "");
     const head = NF.cleanCnHeadline(t).replace(/[：:，。；、]+$/, "");
+    // 【2026-11-18 H19-bugfix】标题被截断在词中间 + 正文是完整原句 → 事实句改用正文首句。
+    //   实拍：标题「…商鹏飞、加拿大央行行长麦克勒姆共同签」（断在「签」），
+    //   正文「…共同签署了《中加金融工作组工作规范》。…」，原实现剥掉标题后剩「署了《…》」，
+    //   再用截断 fact「…商鹏飞」+「。」+ 剩余拼成「商鹏飞。署了《…》」——「签」字丢失、句子断裂。
+    //   判据：正文以完整标题开头、且标题之后仍有内容（说明标题是正文首句的截断前缀），
+    //   此时直接以正文首句为事实句，既补回被截的字、又保证句子完整。
+    let factsFromDetail = "";
+    if (head && d.indexOf(head) === 0 && d.length > head.length) {
+      const afterHead = d.slice(head.length).replace(/^[：:，,。、；\s]+/, "");
+      // 标题断在句中（后面不是句末标点而是可续接的文字）→ 用正文完整首句替换截断事实
+      if (afterHead && !/^[。！？；]/.test(d.slice(head.length))) {
+        const firstStop = d.search(/[。！？]/);
+        factsFromDetail = firstStop >= 6 ? d.slice(0, firstStop + 1) : "";
+      }
+    }
+    if (factsFromDetail) {
+      const body = factsFromDetail + (d.length > factsFromDetail.length ? d.slice(factsFromDetail.length).replace(/^[，。；、\s]+/, "") : "");
+      return clipSummary(body, 110).replace(/[，。；、]+$/, "") + impactSuffix(metal, factsFromDetail, dir, d);
+    }
     // 原文概述常常是「标题：正文」，去掉重复的标题部分
     if (head && d.indexOf(head) === 0) d = d.slice(head.length).replace(/^[：:，,。、；\s]+/, "");
     if (d.length >= 8) {
@@ -2582,7 +2621,7 @@ async function buildEvents() {
         //   ② 摘要保留既有事实正文、只把结论后缀换成金属感知版本（铜=对铜价影响，金银=对贵金属影响）；
         //   ③ 国内源事件重新过 CN_HIT/CN_NOISE 门禁——剔除市井/营销会议/个股业绩/基金流；
         //   ④ 所有事件按新 routeMetal 重路由 metals——宏观事件不再污染铜（铜只留工业金属驱动）。
-        const newTitle = zhTitle(e.origTitle || e.title, e.tags);
+        const newTitle = zhTitle(e.origTitle || e.title, e.tags, e.desc || e.summary);
         // 【C22】市井剔除（统一口径，覆盖国内外源）：会议营销 / 消费轶事 / 个股行情 / 无关题材
         if (NF.isMundane(newTitle + " " + String(e.summary || e.desc || ""))) {
           continue; // 市井内容：本轮回炉，不再续存
@@ -2651,7 +2690,7 @@ async function buildEvents() {
     const clusters = [];
     for (const n of items) {
       const tags = zhTags(n.title);
-      const zt = zhTitle(n.title, tags);                                  // 语言无关的中文事实标题
+      const zt = zhTitle(n.title, tags, n.desc);                          // 语言无关的中文事实标题
       const fact = zt.includes("：") ? zt.slice(0, zt.lastIndexOf("：")) : zt; // 去方向后缀，同事实不同方向也合并
       const key = normTitle(fact);                                        // 跨平台/跨语言同事件 → 同 key
       let hit = null;
@@ -2680,7 +2719,7 @@ async function buildEvents() {
       const rep = cl.items[0];
       const tags = normalizeTags(zhTags(rep.title), rep.title);
       const cat = catOf(rep.title);
-      const title = zhTitle(rep.title, tags);
+      const title = zhTitle(rep.title, tags, rep.desc);
       if (seen[m].has(title) || seenAll.has(title)) continue;
       // 【C22】无信息量兜底标题（「黄金相关动向公布」等于没说）→ 丢弃
       if (/相关动向公布|相关动向|情况公布|消息公布/.test(title)) continue;
