@@ -1738,6 +1738,74 @@
     window.addEventListener("orientationchange", onOrient);
     window.addEventListener("resize", onOrient);
     document.addEventListener("keydown", function (e) { if (e.key === "Escape" && lsActive) exitLandscape(); });
+    initGate();   // 【H18】查看更多入口运营开关（网页端控制 / 小程序端读）
+  }
+
+  /* ---------- 【H18 · 2026-11-18】查看更多入口运营开关 ----------
+     状态存真源 data/access-gate.json，靠 openedAt + ttlMs(15min) 判定，到点自动关闭。
+     网页端是唯一「写」入口（带 sharecode 调平台 /api/gate），小程序端只读显隐。
+     读走平台 /api/gate（no-store，实时）；平台不可达时回退 GH Pages 的 data 文件。 */
+  var gateTimer = null;
+  var GATE_TTL = 15 * 60 * 1000;
+  var GATE_SHARE = "YAC2PRXREO";
+
+  function gateUrl(action) {
+    // 手机静态壳跨域走平台绝对地址 + sharecode；PC 平台版同源相对即可。
+    var p = "/api/gate" + (action ? "?set=" + action + "&sharecode=" + GATE_SHARE : "");
+    return apiUrl(p);
+  }
+  function gateIsOpen(g) {
+    if (!g || typeof g.openedAt !== "number" || !(g.openedAt > 0)) return false;
+    var now = Date.now();
+    if (now < g.openedAt) return false;
+    return (now - g.openedAt) < (g.ttlMs || GATE_TTL);
+  }
+  function renderGate(g, busy) {
+    var sw = document.getElementById("gateSwitch");
+    var txt = document.getElementById("gateText");
+    var hint = document.getElementById("gateHint");
+    if (!sw || !txt) return;
+    var open = gateIsOpen(g);
+    sw.classList.toggle("is-on", open);
+    sw.setAttribute("aria-pressed", open ? "true" : "false");
+    if (busy) {
+      txt.textContent = "处理中…";
+    } else if (open) {
+      var remain = g.openedAt + (g.ttlMs || GATE_TTL) - Date.now();
+      txt.textContent = "已开启 · " + Math.max(0, Math.ceil(remain / 60000)) + " 分钟后关闭";
+    } else {
+      txt.textContent = "已关闭";
+    }
+    if (hint) hint.textContent = open
+      ? "小程序首页底部当前显示「查看更多…」入口，倒计时结束自动关闭。"
+      : "开启后，小程序首页底部将显示「查看更多…」入口，15 分钟后自动关闭。";
+    if (gateTimer) { clearInterval(gateTimer); gateTimer = null; }
+    if (open && !busy) {
+      gateTimer = setInterval(function () { renderGate(g, false); }, 15000);
+    }
+  }
+  function fetchGateState() {
+    // 平台优先（实时 Contents API），失败回退 GH Pages 静态文件
+    return loadJSON(gateUrl()).catch(function () {
+      return loadJSON(canon(CANON + "data/access-gate.json"));
+    });
+  }
+  function initGate() {
+    var sw = document.getElementById("gateSwitch");
+    if (!sw) return;
+    fetchGateState().then(renderGate).catch(function () { renderGate(null, false); });
+    sw.addEventListener("click", function () {
+      var open = sw.classList.contains("is-on");
+      var action = open ? "close" : "open";
+      renderGate(open ? { openedAt: Date.now() - GATE_TTL } : { openedAt: Date.now() }, true);
+      loadJSON(gateUrl(action)).then(function (g) {
+        renderGate(g, false);
+      }).catch(function () {
+        // 写失败：回读真实状态，避免界面与实际不一致
+        fetchGateState().then(function (g) { renderGate(g, false); })
+          .catch(function () { renderGate(null, false); });
+      });
+    });
   }
 
   /* ---------- 移动端横屏查看 ---------- */

@@ -132,6 +132,19 @@
 
   <!-- 底部说明：三端统一，按「数据说明 / 事件分类与归纳 / 相关性指数计算方法 / 更新与免责」四类归纳 -->
   <footer class="app-footer">
+    <!-- 【H18 · 2026-11-18】查看更多入口运营开关：控制小程序端【查看更多】入口显隐。
+         默认关闭；开启后 15 分钟内小程序显示入口，到点自动关闭。状态存真源，
+         靠时间戳判定，三端读同一份。仅网页端可见，小程序端无此开关。 -->
+    <div class="gate-panel" id="gatePanel">
+      <div class="gate-row">
+        <span class="gate-label">小程序「查看更多」入口</span>
+        <button type="button" class="gate-switch" id="gateSwitch" aria-pressed="false" title="开启后 15 分钟内小程序显示入口">
+          <span class="gate-dot"></span><span class="gate-text" id="gateText">已关闭</span>
+        </button>
+      </div>
+      <div class="gate-hint" id="gateHint">开启后，小程序首页底部将显示「查看更多…」入口，15 分钟后自动关闭。</div>
+    </div>
+
     <details class="foot-sec">
       <summary>数据来源与发布链路</summary>
       <div class="foot-body">

@@ -488,6 +488,29 @@ code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; 
 .foot-body ol { margin: 6px 0 6px 18px; padding: 0; }
 .foot-body li { margin: 4px 0; }
 
+/* 【H18】查看更多入口运营开关面板（仅网页端） */
+.gate-panel {
+  margin-bottom: 12px; padding: 11px 13px; border: 1px solid var(--line);
+  border-radius: 10px; background: var(--panel);
+}
+.gate-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.gate-label { font-weight: 600; color: var(--ink); font-size: 13px; }
+.gate-switch {
+  display: inline-flex; align-items: center; gap: 7px; min-height: 34px;
+  padding: 5px 13px; border-radius: 999px; cursor: pointer; user-select: none;
+  font-size: 12.5px; font-weight: 600; line-height: 1;
+  border: 1px solid var(--line); background: rgba(127,127,127,.14); color: var(--ink-soft);
+  transition: background .18s, color .18s, border-color .18s;
+}
+.gate-switch:hover { border-color: var(--gold); }
+.gate-switch:disabled { opacity: .6; cursor: wait; }
+.gate-dot { width: 8px; height: 8px; border-radius: 50%; background: #999; flex: 0 0 auto; }
+.gate-switch.is-on {
+  background: rgba(15,157,88,.14); color: #0b7a43; border-color: rgba(15,157,88,.42);
+}
+.gate-switch.is-on .gate-dot { background: #0f9d58; box-shadow: 0 0 0 3px rgba(15,157,88,.16); }
+.gate-hint { margin-top: 8px; font-size: 11.5px; color: var(--ink-soft); opacity: .85; line-height: 1.6; }
+
 /* ---------- 移动端适配 ---------- */
 @media (max-width: 768px) {
   .app-header { padding: 10px 14px; flex-wrap: wrap; }
