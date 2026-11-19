@@ -1268,7 +1268,10 @@ function normalizeTags(tags, title) {
   }
   return t.slice(0, 6);
 }
-function zhTitle(t, tags, desc) {
+// 【2026-11-19 H22】meta 可选：写入 {lowInfo} 标记标题是否走了「无有效信息」的末路兜底。
+//   现有调用（不传 meta）行为完全不变；入库处传 meta 以丢弃空壳事件。
+function zhTitle(t, tags, desc, meta) {
+  const mark = (s, low) => { if (meta) meta.lowInfo = !!low; return s; };
   // 【C22 用户反馈】「标题…的信息，不知所云。与事件的概括、影响结论/预测，对不上」
   //   三条改法：
   //   ① 中文原文（国内源，天然人话）直接作标题，且**不再硬切 26 字**——
@@ -1292,13 +1295,13 @@ function zhTitle(t, tags, desc) {
         //   这类完整动作句直接去时间前缀后返回（≤60 字，UI 换行即可），保住谓语与宾语。
         if (/共同(签署|发布|宣布|达成|表示)|签署了《|签订了《|发布了《/.test(firstSentence)) {
           const compact = firstSentence.replace(/^(近期|日前|今日|昨日|当地时间|据[^，]{0,8})[，,]/, "");
-          if (compact.length <= 60) return compact;
+          if (compact.length <= 60) return mark(compact, false);
         }
         cn = firstSentence;
       }
     }
   }
-  if (cn.length >= 6) return trimCnTitle(cn);
+  if (cn.length >= 6) return mark(trimCnTitle(cn), false);
   // ② 英文具体事实（规则化抽取，如「美联储维持利率不变（不加息）」「美国通胀率 3.5%」）
   const fd = NF.zhFactDetail(t);
   if (fd.text && !fd.generic) {
@@ -1307,28 +1310,51 @@ function zhTitle(t, tags, desc) {
     //   用户看到「美联储将加息」不知道说的是哪个品种 → 补上价格主语。
     const subjHint = NF.priceSubjectHint(t);
     if (subjHint && !/金价|银价|铜价|黄金|白银|铜/.test(fd.text)) {
-      return subjHint + "：" + fd.text;
+      return mark(subjHint + "：" + fd.text, false);
     }
-    return fd.text;
+    return mark(fd.text, false);
   }
   // ③ 可读译文兜底（专有说法译得准，比标签拼装具体）：如「美国对加拿大加征关税」
   const gist = zhGist(t);
   if (gist && NF.zhGistReadable(gist)) {
     const g = gist.replace(/[，。；、：]+$/, "");
-    if (g.length >= 4) return g;
+    if (g.length >= 4) return mark(g, false);
   }
-  // ④ 末路兜底：从原文抽实体组成「谁说了什么」的句子（不再只拼标签）
-  //   【C22】原兜底是「美联储与美元相关动向公布」——仍然什么都没说。
-  //   这里先抽关键实体（人名/机构/动作短语/数字），至少让用户看出是谁在谈什么。
+  // ④ 【H22】末路兜底：以下两种都是"没有有效信息"的空壳标题，标记 lowInfo=true
+  //   由入库门禁丢弃（不再入库占位）。保留返回值只为兼容不传 meta 的旧调用/展示。
   const ent = zhKeyEntities(t);
   if (ent.length) {
     const kw2 = (tags || []).filter((x) => x !== "走强" && x !== "走弱").slice(0, 1);
     const topic = kw2.length ? kw2[0] : catOf(t) || "市场";
-    return ent.length >= 2 ? ent[0] + "谈" + ent[1] : ent[0] + "谈" + topic;
+    return mark(ent.length >= 2 ? ent[0] + "谈" + ent[1] : ent[0] + "谈" + topic, true);
   }
   const kw = (tags || []).filter((x) => x !== "走强" && x !== "走弱").slice(0, 2);
   const subj = kw.length ? kw.join("与") : catOf(t) || "市场";
-  return subj + "相关动向公布";
+  return mark(subj + "相关动向公布", true);
+}
+
+// 【2026-11-19 H22】残句标题识别：中文快讯被截断在词/谓语中间，读者拿不到完整信息。
+//   判据（命中任一即视为残句，入库丢弃）：
+//     · 以「表示/称/预计/指出/认为/将/表示，」等引述/未完成谓语收尾；
+//     · 以时间/尾盘标签收尾（「…纽约尾盘」「…周一」）；
+//     · 以「的/与/和/及/在/对/为/于」等悬空介词收尾；
+//     · 末字为原文被截断的半个人名/机构（英文残片、单字中文机构后缀）。
+//   注意：只用于生成侧自动事件入库门禁，种子事件/展示层不受影响。
+function isTruncatedTitle(title) {
+  const s = String(title || "").replace(/[，。；、：\s]+$/, "");
+  if (!s) return true;
+  if (/(表示|称|预计|指出|认为|声称|将|与|和|及|在|对|为|于|的)$/.test(s)) return true;
+  if (/(尾盘|收盘|纽约尾盘|周一|周二|周三|周四|周五|周六|周日)$/.test(s)) return true;
+  // 「X谈Y」末路拼装：X、Y 都是提取出的孤立实体/泛词，整句无谓语无信息。
+  //   严格限制整句长度与 Y 为泛词，避免误伤「美联储谈降息路径」这类真正有谓语的短标题。
+  const tan = /^(.{1,8})谈(.{1,8})$/.exec(s);
+  if (tan) {
+    const generic = /^(预计|预测|市场|走势|美联储|美元|股市|通胀|利率|价格|前景|策略|中性|货币政策|市场走势|相关动向|投资者动向|资金动向|股市表现|通胀数据|需求变化|供应变化)$/;
+    if (generic.test(tan[2])) return true;
+  }
+  // 中文标题里的孤立英文残片（人名/机构被截断，如「…投资组合经理Eric Willi」）
+  if (/[\u4e00-\u9fa5][A-Za-z][A-Za-z\s.]{0,30}$/.test(s)) return true;
+  return false;
 }
 
 /**
@@ -2613,6 +2639,12 @@ async function buildEvents() {
   for (const m of METALS_ARR) {
     for (const e of (cur && cur[m]) || []) {
       seenAll.add(e.title);
+      // 【2026-11-19 H22】存量空壳/残句无条件清洗（放在自愈分支之前，覆盖所有历史条目）：
+      //   无论 e.auto/e.cn/seen 状态如何，标题是末路兜底或截断残句 = 没有有效信息 → 整条回炉，
+      //   不进入 res[m]（res 从 seed 初始化，这里 continue 即真正删除，不是仅跳过自愈）。
+      if (e && e.title && (isTruncatedTitle(e.title) || /相关动向公布|相关动向|情况公布|消息公布/.test(e.title))) {
+        continue;
+      }
       // 【C22】中文源（cn）无条件重校 —— 此前依赖 e.auto，中文快讯事件未打 auto 标记被整体跳过，
       //   结果市井条目（如「Alphabet财报不及预期…」）跨轮续存、永远清不掉。
       if (e && e.title && /[\u4e00-\u9fa5]/.test(e.title) && !seen[m].has(e.title) && (e.auto || e.cn || isCnFeed(e.source))) {
@@ -2621,7 +2653,14 @@ async function buildEvents() {
         //   ② 摘要保留既有事实正文、只把结论后缀换成金属感知版本（铜=对铜价影响，金银=对贵金属影响）；
         //   ③ 国内源事件重新过 CN_HIT/CN_NOISE 门禁——剔除市井/营销会议/个股业绩/基金流；
         //   ④ 所有事件按新 routeMetal 重路由 metals——宏观事件不再污染铜（铜只留工业金属驱动）。
-        const newTitle = zhTitle(e.origTitle || e.title, e.tags, e.desc || e.summary);
+        const oldTitleMeta = { lowInfo: false };
+        const newTitle = zhTitle(e.origTitle || e.title, e.tags, e.desc || e.summary, oldTitleMeta);
+        // 【2026-11-19 H22】存量空壳/残句清洗：旧事件标题若仍是末路兜底（X谈Y/相关动向公布）
+        //   或被判为截断残句（…表示/…纽约尾盘/英文人名残片），说明它本身没有有效信息 → 本轮回炉、
+        //   不再续存。这是让历史垃圾真正消失的关键（新入库门禁只管新增，管不到存量）。
+        if (oldTitleMeta.lowInfo || isTruncatedTitle(newTitle)) {
+          continue;
+        }
         // 【C22】市井剔除（统一口径，覆盖国内外源）：会议营销 / 消费轶事 / 个股行情 / 无关题材
         if (NF.isMundane(newTitle + " " + String(e.summary || e.desc || ""))) {
           continue; // 市井内容：本轮回炉，不再续存
@@ -2719,10 +2758,16 @@ async function buildEvents() {
       const rep = cl.items[0];
       const tags = normalizeTags(zhTags(rep.title), rep.title);
       const cat = catOf(rep.title);
-      const title = zhTitle(rep.title, tags, rep.desc);
+      const titleMeta = { lowInfo: false };
+      const title = zhTitle(rep.title, tags, rep.desc, titleMeta);
       if (seen[m].has(title) || seenAll.has(title)) continue;
       // 【C22】无信息量兜底标题（「黄金相关动向公布」等于没说）→ 丢弃
       if (/相关动向公布|相关动向|情况公布|消息公布/.test(title)) continue;
+      // 【2026-11-19 H22】空壳/残句标题门禁：
+      //   · lowInfo：zhTitle 末路兜底（「X谈Y」「X相关动向公布」），原文提炼不出有效信息；
+      //   · 残句：中文快讯被截断在谓语/时间标签/英文人名处（「…Jeff Schmid表示」「…纽约尾盘」）。
+      //   两类都是用户截图反馈的「没有任何有效信息」事件 → 整条丢弃，且不占每日配额。
+      if (titleMeta.lowInfo || isTruncatedTitle(title)) continue;
       // 【C22】低质译文门禁：中文里残留整句英文（翻译失败/拼接错乱）→ 丢弃，且不占每日配额
       const summary = zhSummary(rep.title, rep.desc, tags, cat, m);
       if (NF.isJunk(title) || NF.isJunk(summary)) continue;
@@ -2938,7 +2983,7 @@ function validateEvents(res) {
 
 module.exports = {
   generateAll, fetchSpotAll, buildEvents, zhGist, zhSummary, zhTitle, zhTags,
-  normalizeTags, zhFact: NF.zhFact, splitCrossMetalEvents,
+  normalizeTags, zhFact: NF.zhFact, splitCrossMetalEvents, isTruncatedTitle,
   // 【2026-11-07】导出供自测直接调用（真实函数行为验证，非正则猜测）
   isOpenPeriod, isTradingDayUtc, stripFuturePts, shouldSpliceSpot, spliceSpotLast,
   validateSeries, validateHourly,
