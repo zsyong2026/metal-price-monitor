@@ -344,20 +344,42 @@ async function fetchSinaTdSpot(metal) {
   return { price, date: (f[12] || "").slice(0, 10), time: f[6] || "" };
 }
 
-// 双源交叉校验：取两序列「共有日期」中最新的一天，比对数值偏差
+// 双源交叉校验：比对两序列「共有日期」的偏差。
+// 【2026-11-19 H24】主连换月治理：原逻辑只取「共有日期最新一天」，一旦慢源尚未补当日数据，
+//   共有日期就卡在换月当天（两源盯不同合约，绝对价天然差 3%）→ 永久拒绝发布 → 品种冻结。
+//   改为看最近 N 个共有日的偏差分布：
+//   ① 只要最近窗口内「任一天对齐」(偏差≤容差) → 判定最新偏差=换月单点错位，放行 ok=true 并标记 rollover；
+//   ② 只有最近窗口内「持续多天都超阈值」→ 判定真串档/错源，拒绝发布（保留原保护力度）；
+//   ③ 共有日期不足或全跳过 → 保守放行 skipped（无足够证据拒发）。
+//   注意：CROSS_TOL=2% 阈值本身不变，只修「用哪几天判」的判据。
+const CROSS_WINDOW = 5; // 观察最近 5 个共有交易日
 function crossCheck(a, b) {
   if (!a || !a.length || !b || !b.length) return { ok: true, skipped: true };
   const mapB = new Map(b.map((p) => [p[0], p[1]]));
-  let best = null;
-  for (const p of a) if (mapB.has(p[0])) best = [p[0], p[1], mapB.get(p[0])];
-  if (!best) return { ok: true, skipped: true };
-  const dev = Math.abs(best[1] / best[2] - 1);
-  return {
-    ok: dev <= CROSS_TOL,
-    date: new Date(best[0]).toISOString().slice(0, 10),
-    dev: Math.round(dev * 10000) / 10000,
-    a: best[1], b: best[2],
+  const common = [];
+  for (const p of a) if (mapB.has(p[0])) common.push([p[0], p[1], mapB.get(p[0])]);
+  if (!common.length) return { ok: true, skipped: true };
+  common.sort((x, y) => x[0] - y[0]); // 按时间升序，末位=最新
+  const window = common.slice(-CROSS_WINDOW);
+  const devs = window.map((c) => ({ d: c[0], a: c[1], b: c[2], dev: Math.abs(c[1] / c[2] - 1) }));
+  const last = devs[devs.length - 1];
+  const base = {
+    date: new Date(last.d).toISOString().slice(0, 10),
+    dev: Math.round(last.dev * 10000) / 10000,
+    a: last.a, b: last.b,
+    window: devs.length,
   };
+  // ① 最近窗口内存在任一对齐日 → 最新偏差是换月错位，放行但标记，供健康报告追溯
+  const anyAligned = devs.some((x) => x.dev <= CROSS_TOL);
+  if (last.dev > CROSS_TOL && anyAligned) {
+    return Object.assign(base, { ok: true, skipped: false, rollover: true });
+  }
+  // ② 窗口内全部超阈值 → 真串档/错源，拒绝
+  if (last.dev > CROSS_TOL) {
+    return Object.assign(base, { ok: false, skipped: false, rollover: false });
+  }
+  // ③ 最新日对齐 → 通过
+  return Object.assign(base, { ok: true, skipped: false, rollover: false });
 }
 
 // 由国内真实收盘反推伦敦价（新浪不可用时的回退路径）；与上方 back-calc 严格互逆
@@ -396,6 +418,7 @@ async function fetchRealSeries(metal, rates) {
       const innerS = innerD.filter((p) => p[0] >= from).map((p) => [p[0], round2(p[1] * isc)]);
       dCross = crossCheck(D, innerS);
       if (!dCross.ok) dNote = "东财 vs 新浪内盘偏差 " + (dCross.dev * 100).toFixed(2) + "%";
+      else if (dCross.rollover) dNote = "主连换月错位已豁免（" + (dCross.dev * 100).toFixed(2) + "%：最近共有日仍有对齐，非串档）";
     }
   } else if (innerOk) {
     // 东财不可达（平台沙箱）→ 新浪内盘主连接管；再用实时价补「当日」这根
@@ -2986,6 +3009,6 @@ module.exports = {
   normalizeTags, zhFact: NF.zhFact, splitCrossMetalEvents, isTruncatedTitle,
   // 【2026-11-07】导出供自测直接调用（真实函数行为验证，非正则猜测）
   isOpenPeriod, isTradingDayUtc, stripFuturePts, shouldSpliceSpot, spliceSpotLast,
-  validateSeries, validateHourly,
+  validateSeries, validateHourly, crossCheck,
 };
 if (require.main === module) generateAll().then((r) => console.log("done", r)).catch((e) => { console.error(e); process.exit(1); });
